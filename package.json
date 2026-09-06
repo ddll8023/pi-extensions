@@ -1,0 +1,13 @@
+{
+  "name": "pi-extensions",
+  "version": "0.1.0",
+  "description": "Personal Pi Agent extensions",
+  "keywords": ["pi-package"],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": ["./*/index.ts"]
+  }
+}
