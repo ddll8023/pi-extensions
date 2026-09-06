@@ -9,10 +9,10 @@ interface PermissionModeState {
 
 const STATE_ENTRY = "permission-mode-state";
 const STATUS_KEY = "permission-mode";
-const EDIT_TOOL = "edit";
+const BLOCKED_TOOLS = new Set(["edit", "write"]);
 
 const MODE_LABELS: Record<PermissionMode, string> = {
-	"no-edit": "No edit（禁止 edit）",
+	"no-edit": "No edit（禁止 edit/write）",
 	auto: "自动（全部工具）",
 };
 
@@ -59,7 +59,7 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 
 	function applyMode(): void {
 		const availableTools = allToolNames(pi);
-		const activeTools = mode === "no-edit" ? availableTools.filter((name) => name !== EDIT_TOOL) : availableTools;
+		const activeTools = mode === "no-edit" ? availableTools.filter((name) => !BLOCKED_TOOLS.has(name)) : availableTools;
 		pi.setActiveTools(activeTools);
 	}
 
@@ -90,7 +90,7 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 		}
 
 		const choice = await ctx.ui.select(`选择权限模式（当前：${MODE_LABELS[mode]}）`, [
-			"No edit：禁止 edit 工具，其他工具全部允许",
+			"No edit：禁止 edit 和 write 工具，其他工具全部允许",
 			"自动：全部工具允许",
 		]);
 
@@ -133,11 +133,11 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", async (event) => {
-		if (mode !== "no-edit" || event.toolName !== EDIT_TOOL) return;
+		if (mode !== "no-edit" || !BLOCKED_TOOLS.has(event.toolName)) return;
 
 		return {
 			block: true,
-			reason: "No edit 模式已禁止 edit 工具。请使用 /permission-mode auto 恢复自动模式。",
+			reason: "No edit 模式已禁止 edit 和 write 工具。请使用 /permission-mode auto 恢复自动模式。",
 		};
 	});
 
