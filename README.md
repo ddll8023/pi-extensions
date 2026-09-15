@@ -7,6 +7,7 @@
 - `codex-usage/`：在底部状态栏显示 ChatGPT/Codex 账号剩余额度，命令为 `/codex-usage`。
 - `settings-zh/`：中文设置菜单扩展，命令为 `/settings-zh`。
 - `permission-mode/`：权限模式切换扩展，命令为 `/permission-mode`。
+- `token-rate/`：在底部状态栏显示当前 AI 回复的 Token 生成速率。
 
 权限模式支持：
 
