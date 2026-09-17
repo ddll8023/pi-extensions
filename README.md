@@ -11,8 +11,10 @@
 
 权限模式支持：
 
-- `No edit`：禁止模型调用 `edit` 工具，其他工具允许；
-- `自动`：启用当前会话可用的全部工具。
+- `No edit`：只读工具与只读 shell 命令直接放行，会修改内容的操作先弹确认框（允许一次 / 本会话始终允许同类操作 / 拒绝）；对静默放行的只读命令启用 git 变更哨兵，发现实际写入会自动回滚；
+- `自动`：全部操作直接执行，不再询问。
+
+详见 [`permission-mode/README.md`](permission-mode/README.md)。
 
 `package.json` 中的 `pi.extensions` 使用 `./*/index.ts`，后续每增加一个带有 `index.ts` 的插件子目录，安装此 package 时会一并加载。
 
