@@ -143,13 +143,32 @@ function formatWindowLabel(seconds: number): string {
 	return `${Math.round(seconds)}秒`;
 }
 
+/** 将重置时间换算成“还剩多久”的简短文案，用于宽度有限的状态栏。 */
+function formatCountdown(resetAt: number | undefined): string {
+	if (resetAt === undefined) return "重置时间未知";
+
+	const remainingMinutes = Math.floor((resetAt * 1000 - Date.now()) / 60_000);
+	if (remainingMinutes <= 0) return "即将重置";
+
+	const days = Math.floor(remainingMinutes / 1_440);
+	const hours = Math.floor((remainingMinutes % 1_440) / 60);
+	const minutes = remainingMinutes % 60;
+
+	if (days > 0) return `${days}天${hours}小时后重置`;
+	if (hours > 0) return `${hours}小时${minutes}分后重置`;
+	return `${minutes}分钟后重置`;
+}
+
 function formatStatus(snapshot: QuotaSnapshot): string {
 	if (snapshot.windows.length === 0) {
 		return snapshot.limitReached ? "Codex额度：已达到限制" : "Codex额度：暂无数据";
 	}
 
 	const windows = snapshot.windows
-		.map((window) => `${formatWindowLabel(window.windowSeconds)}剩${Math.round(window.remainingPercent)}%`)
+		.map(
+			(window) =>
+				`${formatWindowLabel(window.windowSeconds)}剩${Math.round(window.remainingPercent)}% ${formatCountdown(window.resetAt)}`,
+		)
 		.join(" ");
 	const credits = snapshot.credits ? ` 余额${snapshot.credits}` : "";
 	return `Codex ${windows}${credits}`;
@@ -158,12 +177,16 @@ function formatStatus(snapshot: QuotaSnapshot): string {
 function formatResetTime(resetAt: number | undefined): string {
 	if (resetAt === undefined) return "未知";
 
+	const resetDate = new Date(resetAt * 1000);
+	const time = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(resetDate);
+	if (resetDate.toDateString() === new Date().toDateString()) return `今天 ${time}`;
+
 	return new Intl.DateTimeFormat("zh-CN", {
 		month: "numeric",
 		day: "numeric",
 		hour: "2-digit",
 		minute: "2-digit",
-	}).format(new Date(resetAt * 1000));
+	}).format(resetDate);
 }
 
 function formatDetails(snapshot: QuotaSnapshot): string {
@@ -174,7 +197,7 @@ function formatDetails(snapshot: QuotaSnapshot): string {
 	const windows = snapshot.windows
 		.map(
 			(window) =>
-				`${formatWindowLabel(window.windowSeconds)}剩余 ${Math.round(window.remainingPercent)}%，重置于 ${formatResetTime(window.resetAt)}`,
+				`${formatWindowLabel(window.windowSeconds)}剩余 ${Math.round(window.remainingPercent)}%（${formatCountdown(window.resetAt)}，重置时间 ${formatResetTime(window.resetAt)}）`,
 		)
 		.join("；");
 	const credits = snapshot.credits ? `；余额 ${snapshot.credits}` : "";
@@ -260,6 +283,8 @@ export default function codexUsageExtension(pi: ExtensionAPI): void {
 
 		void refreshQuota(ctx, currentGeneration, true);
 		timer = setInterval(() => {
+			// 先用上一次数据重绘，保证接口偶发失败时倒计时仍在走。
+			if (lastSnapshot) setStatus(ctx, formatStatus(lastSnapshot), statusColor(lastSnapshot));
 			void refreshQuota(ctx, currentGeneration);
 		}, POLL_INTERVAL_MS);
 	}
