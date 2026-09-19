@@ -36,7 +36,7 @@ const MODE_LABELS: Record<PermissionMode, string> = {
 };
 
 const STATUS_LABELS: Record<PermissionMode, string> = {
-	"no-edit": "No edit（只读+确认）",
+	"no-edit": "No edit",
 	auto: "自动",
 };
 
@@ -115,8 +115,8 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 
 	function updateStatus(ctx: ExtensionContext): void {
 		const color = mode === "no-edit" ? "warning" : "accent";
-		const label = mode === "no-edit" && !rollbackOnChange ? "No edit（哨兵关闭）" : STATUS_LABELS[mode];
-		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, `权限：${label}`));
+		const label = mode === "no-edit" && !rollbackOnChange ? "No edit!" : STATUS_LABELS[mode];
+		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, `权限 ${label}`));
 	}
 
 	function persistState(): void {

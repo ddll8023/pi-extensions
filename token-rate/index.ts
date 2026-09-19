@@ -188,15 +188,24 @@ function formatRate(rate: number): string {
 
 function formatMetric(metric: RateMetric | undefined): string {
 	if (!metric) return "—";
-	return `${metric.approximate ? "≈" : ""}${formatRate(metric.rate)} tok/s`;
+	return `${metric.approximate ? "≈" : ""}${formatRate(metric.rate)}/s`;
+}
+
+function clearStatus(ctx: ExtensionContext): void {
+	if (ctx.mode === "tui") ctx.ui.setStatus(STATUS_KEY, undefined);
 }
 
 function setStatus(ctx: ExtensionContext, realtime: RateMetric | undefined, average: RateMetric | undefined): void {
 	if (ctx.mode !== "tui") return;
-	ctx.ui.setStatus(
-		STATUS_KEY,
-		ctx.ui.theme.fg("accent", `Token速率 实时：${formatMetric(realtime)} 平均：${formatMetric(average)}`),
-	);
+	if (!realtime && !average) {
+		clearStatus(ctx);
+		return;
+	}
+
+	const parts: string[] = [];
+	if (realtime) parts.push(`实${formatMetric(realtime)}`);
+	if (average) parts.push(`均${formatMetric(average)}`);
+	ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("accent", `速率 ${parts.join(" ")}`));
 }
 
 function createResponse(): ActiveResponse {
@@ -256,14 +265,14 @@ export default function tokenRateExtension(pi: ExtensionAPI): void {
 	pi.on("turn_start", async (_event, ctx) => {
 		stopRenderTimer();
 		activeResponse = undefined;
-		setStatus(ctx, undefined, averageMetric(conversationTotals, undefined, Date.now()));
+		clearStatus(ctx);
 	});
 
 	pi.on("message_start", async (event, ctx) => {
 		if (ctx.mode !== "tui" || event.message.role !== "assistant") return;
 
 		activeResponse = createResponse();
-		setStatus(ctx, undefined, averageMetric(conversationTotals, undefined, Date.now()));
+		clearStatus(ctx);
 		startRenderTimer(ctx);
 	});
 
@@ -290,13 +299,11 @@ export default function tokenRateExtension(pi: ExtensionAPI): void {
 		if (!response) return;
 
 		const timestamp = Date.now();
-		const liveRateBeforeFinalSnapshot = realtimeMetric(response, timestamp, true);
 		const snapshot = snapshotFromMessage(event.message);
 		if (snapshot) applySnapshot(response, snapshot, timestamp);
 
 		addCompletedResponse(conversationTotals, response, timestamp);
-		const liveRate = realtimeMetric(response, timestamp, true) ?? liveRateBeforeFinalSnapshot;
-		setStatus(ctx, liveRate, averageMetric(conversationTotals, undefined, timestamp));
+		clearStatus(ctx);
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {

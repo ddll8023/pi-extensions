@@ -159,16 +159,21 @@ function formatCountdown(resetAt: number | undefined): string {
 	return `${minutes}分钟后重置`;
 }
 
+function formatCompactReset(resetAt: number | undefined): string {
+	const countdown = formatCountdown(resetAt);
+	if (countdown === "重置时间未知") return "↻?";
+	if (countdown === "即将重置") return "↻即将";
+
+	return `↻${countdown.replace(/后重置$/, "").replaceAll("小时", "时").replaceAll("分钟", "分")}`;
+}
+
 function formatStatus(snapshot: QuotaSnapshot): string {
 	if (snapshot.windows.length === 0) {
 		return snapshot.limitReached ? "Codex额度：已达到限制" : "Codex额度：暂无数据";
 	}
 
 	const windows = snapshot.windows
-		.map(
-			(window) =>
-				`${formatWindowLabel(window.windowSeconds)}剩${Math.round(window.remainingPercent)}% ${formatCountdown(window.resetAt)}`,
-		)
+		.map((window) => `${formatWindowLabel(window.windowSeconds)}${Math.round(window.remainingPercent)}%${formatCompactReset(window.resetAt)}`)
 		.join(" ");
 	const credits = snapshot.credits ? ` 余额${snapshot.credits}` : "";
 	return `Codex ${windows}${credits}`;
