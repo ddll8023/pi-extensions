@@ -49,12 +49,34 @@ const EXTENSION_READ_ONLY_TOOLS = [
 	"rg",
 	"ctx_search",
 	"ctx_stats",
+	"mcp_database_database_status",
 	"todo",
 	"tool_search",
 ];
 
+/**
+ * No edit 下不因工具名重复询问的 context-mode 工具。
+ * 其中真正执行代码的工具由变更哨兵兜底回滚 git 工作区变更。
+ */
+const COMMAND_EXECUTION_TOOLS = ["ctx_execute", "ctx_execute_file", "ctx_batch_execute"];
+const AUTO_CONTEXT_TOOLS = [
+	...COMMAND_EXECUTION_TOOLS,
+	"ctx_fetch_and_index",
+	"ctx_index",
+	"ctx_doctor",
+	"ctx_insight",
+];
+
 export function readOnlyToolNames(policy?: ReadOnlyPolicy): Set<string> {
 	return new Set([...BUILTIN_READ_ONLY_TOOLS, ...EXTENSION_READ_ONLY_TOOLS, ...(policy?.extraTools ?? [])]);
+}
+
+export function autoContextToolNames(): Set<string> {
+	return new Set(AUTO_CONTEXT_TOOLS);
+}
+
+export function commandExecutionToolNames(): Set<string> {
+	return new Set(COMMAND_EXECUTION_TOOLS);
 }
 
 type CommandPredicate = (args: string[], name: string) => CommandVerdict;

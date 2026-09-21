@@ -2,7 +2,7 @@
 
 为 Pi Agent 提供两种权限模式：
 
-- **No edit（默认）**：只读操作直接执行，会修改内容的操作先向你确认；
+- **No edit（默认）**：命令类调用直接执行，`edit`/`write` 等文件编辑操作先向你确认；
 - **自动**：全部操作直接执行，不再询问。
 
 ## 使用
@@ -19,8 +19,9 @@
 ## No edit 模式的行为
 
 1. **只读工具**（`read`、`grep`、`find`、`ls`，以及已知只读的扩展工具）直接放行。
-2. **只读 shell 命令**（`bash` / `powershell`）直接放行，例如 `git status`、`git log`、`rg`、`cat`、`Get-ChildItem`。
-3. **其它一切调用**（`edit`、`write`、写文件命令、`ctx_execute`、MCP 工具、`memory_add`、`skill_manage` 等）弹出确认框：
+2. **只读 shell 命令**（`bash` / `powershell`）直接放行，例如 `git status`、`git log`、`rg`、`cat`、`Get-ChildItem`；明确写入的 shell 命令仍会确认。
+3. **命令/分析工具**（`ctx_execute`、`ctx_execute_file`、`ctx_batch_execute`、`ctx_fetch_and_index`、`ctx_index`、`ctx_doctor`、`ctx_insight`）直接执行，不因工具名重复确认；
+4. **其它调用**（`edit`、`write`、未列入命令工具的 MCP 工具、`memory_add`、`skill_manage` 等）弹出确认框：
 
    - `允许一次`：仅本次放行；
    - `本会话始终允许同类操作`：按工具名或命令名记住，本会话内不再询问；
@@ -28,12 +29,13 @@
 
    没有可交互界面时（例如 `-p` 打印模式）一律按拒绝处理。
 
-4. **变更哨兵**：对第 2 类静默放行的命令，在执行前后比对 git 工作区；如果命令实际写入了文件，自动回滚这些路径并把工具结果标记为错误。被第 3 类确认放行的操作不回滚。
+5. **变更哨兵**：对第 2、3 类静默放行的调用，在执行前后比对 git 工作区；如果实际写入了文件，自动回滚这些路径并把工具结果标记为错误。被第 4 类确认放行的操作不回滚。
 
-## 只读工具白名单
+## 自动放行工具
 
-- 内置：`read`、`grep`、`find`、`ls`
-- 扩展工具（未安装的会被自动忽略）：`web_search`、`source_check`、`fetch_content`、`get_search_content`、`memory_search`、`session_search`、`ask_user_question`、`questionnaire`、`ffgrep`、`fffind`、`rg`、`ctx_search`、`ctx_stats`、`todo`、`tool_search`
+- 内置只读：`read`、`grep`、`find`、`ls`
+- 命令/分析工具：`ctx_execute`、`ctx_execute_file`、`ctx_batch_execute`、`ctx_fetch_and_index`、`ctx_index`、`ctx_doctor`、`ctx_insight`（实际改动由变更哨兵回滚）
+- 扩展工具（未安装的会被自动忽略）：`web_search`、`source_check`、`fetch_content`、`get_search_content`、`memory_search`、`session_search`、`ask_user_question`、`questionnaire`、`ffgrep`、`fffind`、`rg`、`ctx_search`、`ctx_stats`、`mcp_database_database_status`、`todo`、`tool_search`
 
 ## 只读命令判定
 
@@ -67,6 +69,7 @@
 
 ## 边界与已知限制
 
+- 命令/分析工具不弹出前置确认；如果其中的脚本改动 git 工作区，变更哨兵会在执行后回滚。非 git 目录、外部系统和数据库副作用无法由哨兵回滚。
 - Pi 没有内置沙箱，Windows 原生也没有可用的 OS 级沙箱，因此 No edit 是**策略层拦截 + 事后回滚**，不是强隔离。需要强隔离时应在容器 / WSL 中运行 Pi。
 - 命令判定是启发式的：白名单外的命令一律需要确认，因此误报（多问一次）是设计的一部分；漏报由变更哨兵兜底。
 - 变更哨兵依赖 `git`，且只在 git 工作区内生效；非 git 目录会提示哨兵不可用。它只比对 git 状态码变化的路径，不检测已存在的未跟踪文件的内容变化。

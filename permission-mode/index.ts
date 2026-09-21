@@ -9,7 +9,14 @@ import {
 import { Key } from "@earendil-works/pi-tui";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { judgeShellCommand, readOnlyToolNames, type ReadOnlyPolicy, type ShellKind } from "./readonly.ts";
+import {
+	autoContextToolNames,
+	commandExecutionToolNames,
+	judgeShellCommand,
+	readOnlyToolNames,
+	type ReadOnlyPolicy,
+	type ShellKind,
+} from "./readonly.ts";
 import { formatFinding, snapshotWorkspace, WorkspaceSentinel } from "./sentinel.ts";
 
 type PermissionMode = "no-edit" | "auto";
@@ -31,7 +38,7 @@ const CONFIG_FILE_NAME = "permission-mode.json";
 const DETAIL_LIMIT = 600;
 
 const MODE_LABELS: Record<PermissionMode, string> = {
-	"no-edit": "No edit（只读，修改前确认）",
+	"no-edit": "No edit（命令直行，编辑确认）",
 	auto: "自动（全部工具，不确认）",
 };
 
@@ -41,7 +48,10 @@ const STATUS_LABELS: Record<PermissionMode, string> = {
 };
 
 const MODE_CHOICES: Array<{ label: string; mode: PermissionMode }> = [
-	{ label: "No edit：只读工具与只读命令直接放行，会修改内容的操作先询问你", mode: "no-edit" },
+	{
+		label: "No edit：命令类调用直接执行，edit/write 等文件编辑操作先询问你",
+		mode: "no-edit",
+	},
 	{ label: "自动：全部操作直接执行，不再询问", mode: "auto" },
 ];
 
@@ -111,6 +121,8 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 	const sessionGrants = new Set<string>();
 	const sentinel = new WorkspaceSentinel();
 	const readOnlyTools = (): Set<string> => readOnlyToolNames(policy);
+	const autoContextTools = autoContextToolNames();
+	const commandExecutionTools = commandExecutionToolNames();
 	const grantKey = (kind: "tool" | "command", name: string): string => `${kind}:${name}`;
 
 	function updateStatus(ctx: ExtensionContext): void {
@@ -220,7 +232,7 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.registerCommand("permission-mode", {
-		description: "切换 Pi 权限模式（no-edit 只读 + 修改确认 / auto 全部允许）",
+		description: "切换 Pi 权限模式（no-edit 命令直行 + 编辑确认 / auto 全部允许）",
 		handler: handleCommand,
 	});
 
@@ -270,6 +282,13 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 			return undefined;
 		}
 
+		if (autoContextTools.has(event.toolName)) {
+			// context-mode 的命令/分析调用不因工具名本身重复询问；
+			// 真正执行代码的工具若改动 git 工作区，由变更哨兵回滚并报错。
+			if (commandExecutionTools.has(event.toolName)) await sentinel.begin(event.toolCallId, ctx.cwd);
+			return undefined;
+		}
+
 		if (readOnlyTools().has(event.toolName)) return undefined;
 		if (sessionGrants.has(grantKey("tool", event.toolName))) return undefined;
 
@@ -292,7 +311,9 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 
 	pi.on("tool_result", async (event) => {
 		if (mode !== "no-edit") return undefined;
-		if (!isBashToolResult(event) && !isPowerShellToolResult(event)) return undefined;
+		if (!isBashToolResult(event) && !isPowerShellToolResult(event) && !commandExecutionTools.has(event.toolName)) {
+			return undefined;
+		}
 
 		const finding = await sentinel.finish(event.toolCallId, rollbackOnChange);
 		if (!finding) return undefined;
