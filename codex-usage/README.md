@@ -32,3 +32,5 @@ GET https://chatgpt.com/backend-api/wham/usage
 ```
 
 该接口是 Codex 客户端使用的内部接口，并非稳定的公开 API；如果 OpenAI 修改接口，额度状态可能暂时无法显示。扩展不会输出或保存 OAuth 访问令牌。
+
+状态栏条目仅在当前模型使用 Codex 响应 API（`openai-codex-responses`）时显示；切换到其他模型后条目会自动清除，也不会再轮询额度。此时仍可手动执行 `/codex-usage` 查询额度详情。

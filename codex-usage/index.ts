@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const PROVIDER_ID = "openai-codex";
+const CODEX_API = "openai-codex-responses";
 const STATUS_KEY = "codex-usage";
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const POLL_INTERVAL_MS = 60_000;
@@ -23,6 +24,11 @@ type QuotaSnapshot = {
 
 function isRecord(value: unknown): value is JsonRecord {
 	return typeof value === "object" && value !== null;
+}
+
+/** 当前会话是否正在使用 Codex 模型，非 Codex 模型不显示额度状态。 */
+function isCodexModel(ctx: ExtensionContext): boolean {
+	return ctx.model?.api === CODEX_API;
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -311,11 +317,19 @@ export default function codexUsageExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (ctx.mode === "tui") startPolling(ctx);
+		if (ctx.mode === "tui" && isCodexModel(ctx)) startPolling(ctx);
 	});
 
 	pi.on("model_select", async (_event, ctx) => {
-		if (ctx.mode === "tui" && isActive) void refreshQuota(ctx, generation, true);
+		if (ctx.mode !== "tui") return;
+
+		if (!isCodexModel(ctx)) {
+			clearPolling(ctx);
+			return;
+		}
+
+		if (isActive) void refreshQuota(ctx, generation, true);
+		else startPolling(ctx);
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
