@@ -113,12 +113,13 @@ function sameConversationUrl(saved: string | undefined, current: string): boolea
 }
 
 async function rebindActivePage(pi: ExtensionAPI, ctx: ExtensionContext, store: PlannerTaskStore, state: PlannerTaskState): Promise<void> {
-  const page = await createOrcaClient(pi, ctx.cwd).findSingleChatPage();
-  if (!sameConversationUrl(state.chatUrl, page.url)) throw new Error("无法把已保存任务绑定到唯一的原网页线程；不会重发消息");
-  if (state.browserPageId !== page.browserPageId) {
-    state.browserPageId = page.browserPageId;
-    state.browserProfileId = page.profileId ?? state.browserProfileId;
+  if (!state.browserPageId) throw new Error("任务没有已绑定的网页标签页；不会新建线程");
+  const page = await createOrcaClient(pi, ctx.cwd).findTabById(state.browserPageId);
+  if (!page) throw new Error("已保存的 ChatGPT 标签页已不存在；不会自动另开线程，以免串话");
+  if (!sameConversationUrl(state.chatUrl, page.url)) throw new Error("已保存的标签页不再指向原会话；不会重发消息");
+  if (state.chatUrl !== page.url || state.browserProfileId !== page.profileId) {
     state.chatUrl = page.url;
+    state.browserProfileId = page.profileId ?? state.browserProfileId;
     await store.writeTask(state);
   }
 }
@@ -180,9 +181,11 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
         });
         try {
           const orca = createOrcaClient(pi, ctx.cwd);
-          const page = await orca.findSingleChatPage();
+          const ensured = await orca.ensureChatPage();
+          const page = ensured.page;
           task.browserPageId = page.browserPageId;
           task.browserProfileId = page.profileId;
+          task.worktreeId = ensured.worktree.id;
           task.chatUrl = page.url;
           task.status = "preflight";
           await store.writeTask(task);
@@ -191,7 +194,6 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
           await store.writeTask(task);
           const selection = await orca.preflight(page.browserPageId);
           task.browserPageId = page.browserPageId;
-          task.browserProfileId = page.profileId;
           task.chatUrl = freshChatUrl || page.url;
           task.selectedModel = selection.model;
           task.thinkingLevel = selection.thinkingLevel;
@@ -254,12 +256,14 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
       if (state.status === "paused" && !state.pending && state.roundsUsed === 0 && state.browserPageId) {
         try {
           const orca = createOrcaClient(pi, ctx.cwd);
-          const page = await orca.findSingleChatPage();
-          if (!sameConversationUrl(state.chatUrl, page.url)) throw new Error("目标 ChatGPT 页面已改变");
+          const ensured = await orca.ensureChatPage({ browserPageId: state.browserPageId });
+          const page = ensured.page;
+          if (state.chatUrl && !sameConversationUrl(state.chatUrl, page.url)) throw new Error("目标 ChatGPT 页面已改变");
           const freshChatUrl = await orca.startFreshChat(page.browserPageId);
           const selection = await orca.preflight(page.browserPageId);
           state.browserPageId = page.browserPageId;
-          state.browserProfileId = page.profileId;
+          state.browserProfileId = page.profileId ?? state.browserProfileId;
+          state.worktreeId = ensured.worktree.id;
           state.chatUrl = freshChatUrl || page.url;
           state.selectedModel = selection.model;
           state.thinkingLevel = selection.thinkingLevel;
@@ -352,7 +356,16 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
       await store.writeTask(state);
       worker?.stop();
       await store.releaseActive(state.taskId);
-      ctx.ui.notify("已停止后续网页派发；不会撤回已发送消息或回滚本地文件。", "warning");
+      let closeNote = "";
+      if (state.browserPageId) {
+        try {
+          await createOrcaClient(pi, ctx.cwd).closePage(state.browserPageId);
+          closeNote = "\n已关闭该任务的 ChatGPT 标签页。";
+        } catch (error) {
+          closeNote = `\n标签页关闭失败：${errorText(error)}`;
+        }
+      }
+      ctx.ui.notify(`已停止后续网页派发；不会撤回已发送消息或回滚本地文件。${closeNote}`, "warning");
     },
   });
 

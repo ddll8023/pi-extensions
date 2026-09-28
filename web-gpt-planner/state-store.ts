@@ -35,6 +35,7 @@ export interface PlannerTaskState {
   sessionName?: string;
   browserPageId?: string;
   browserProfileId?: string;
+  worktreeId?: string;
   chatUrl?: string;
   allowedSourceFiles: string[];
   selectedModel?: string;

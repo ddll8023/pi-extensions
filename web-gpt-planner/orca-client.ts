@@ -18,7 +18,21 @@ export interface OrcaPage {
   browserPageId: string;
   url: string;
   profileId?: string;
+  worktreeId?: string;
 }
+
+export interface OrcaProfile {
+  id: string;
+  label?: string;
+}
+
+export interface OrcaWorktree {
+  id: string;
+  path: string;
+}
+
+/** Overrides the Orca browser profile used for new ChatGPT tabs; accepts a profile id or label. */
+export const PROFILE_ENV_VAR = "WEB_GPT_PLANNER_ORCA_PROFILE";
 
 export interface OrcaSnapshot {
   origin?: string;
@@ -60,11 +74,48 @@ function unwrapJson<T>(stdout: string): T {
 function pageFields(value: unknown): OrcaPage | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const row = value as Record<string, unknown>;
-  const id = row.browserPageId;
+  const id = row.browserPageId ?? row.pageId ?? row.id;
   const url = row.url ?? row.href ?? row.currentUrl;
   const profileId = row.profileId ?? row.browserProfileId ?? row.sessionProfileId;
+  const worktreeId = row.worktreeId ?? row.worktree_id;
   if (typeof id !== "string" || typeof url !== "string") return undefined;
-  return { browserPageId: id, url, ...(typeof profileId === "string" ? { profileId } : {}) };
+  return {
+    browserPageId: id,
+    url,
+    ...(typeof profileId === "string" ? { profileId } : {}),
+    ...(typeof worktreeId === "string" ? { worktreeId } : {}),
+  };
+}
+
+function rowsOf(value: unknown, key: string): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "object" && value !== null && Array.isArray((value as Record<string, unknown>)[key])) {
+    return (value as Record<string, unknown[]>)[key];
+  }
+  return [];
+}
+
+function isChatGptUrl(url: string): boolean {
+  return /^https:\/\/chatgpt\.com(?:\/|$)/i.test(url);
+}
+
+function profileFields(value: unknown): OrcaProfile | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const row = value as Record<string, unknown>;
+  if (typeof row.id !== "string") return undefined;
+  return { id: row.id, ...(typeof row.label === "string" ? { label: row.label } : {}) };
+}
+
+function worktreeFields(value: unknown): OrcaWorktree | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const row = value as Record<string, unknown>;
+  if (typeof row.id !== "string" || typeof row.path !== "string") return undefined;
+  return { id: row.id, path: row.path };
+}
+
+/** Orca reports either slash style; compare on a normalized key instead of raw strings. */
+function normalizePathKey(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
 }
 
 export class OrcaClient {
@@ -88,17 +139,75 @@ export class OrcaClient {
     return unwrapJson<T>(result.stdout);
   }
 
-  /** Select only by ChatGPT origin; titles and unrelated tab metadata are never returned. */
-  async findSingleChatPage(signal?: AbortSignal): Promise<OrcaPage> {
-    const result = await this.run<unknown>(["tab", "list", "--worktree", `path:${this.cwd}`], signal);
-    const rows = Array.isArray(result)
-      ? result
-      : typeof result === "object" && result !== null && Array.isArray((result as Record<string, unknown>).tabs)
-        ? (result as { tabs: unknown[] }).tabs
-        : [];
-    const pages = rows.map(pageFields).filter((page): page is OrcaPage => Boolean(page && /^https:\/\/chatgpt\.com(?:\/|$)/i.test(page.url)));
-    if (pages.length !== 1) throw new OrcaClientError(pages.length === 0 ? "No ChatGPT tab is registered in this Orca worktree" : "Multiple ChatGPT tabs found; close extras and retry");
-    return pages[0];
+  /** Worktree-scoped tab listing; titles are never surfaced. */
+  private async listTabs(worktreeSelector: string, signal?: AbortSignal): Promise<OrcaPage[]> {
+    const result = await this.run<unknown>(["tab", "list", "--show-profile", "--worktree", worktreeSelector], signal);
+    return rowsOf(result, "tabs").map(pageFields).filter((page): page is OrcaPage => Boolean(page));
+  }
+
+  /** ChatGPT pages registered in the Pi working directory's Orca worktree. */
+  async findChatPages(signal?: AbortSignal): Promise<OrcaPage[]> {
+    return (await this.listTabs(`path:${this.cwd}`, signal)).filter((page) => isChatGptUrl(page.url));
+  }
+
+  /** Locate a previously bound tab by its saved id, across worktrees. */
+  async findTabById(pageId: string, signal?: AbortSignal): Promise<OrcaPage | undefined> {
+    return (await this.listTabs("all", signal)).find((page) => page.browserPageId === pageId);
+  }
+
+  /** The current directory must already be an Orca workspace; the plugin never registers one. */
+  async resolveWorktree(signal?: AbortSignal): Promise<OrcaWorktree> {
+    const result = await this.run<unknown>(["worktree", "list"], signal);
+    const wanted = normalizePathKey(this.cwd);
+    const match = rowsOf(result, "worktrees")
+      .map(worktreeFields)
+      .filter((row): row is OrcaWorktree => Boolean(row))
+      .find((row) => normalizePathKey(row.path) === wanted);
+    if (!match) {
+      throw new OrcaClientError(`当前目录不是 Orca 已登记的工作区（${this.cwd}）；请先在 Orca 中打开该目录，再执行 /sol-plan`);
+    }
+    return match;
+  }
+
+  async listProfiles(signal?: AbortSignal): Promise<OrcaProfile[]> {
+    const result = await this.run<unknown>(["tab", "profile", "list"], signal);
+    return rowsOf(result, "profiles").map(profileFields).filter((row): row is OrcaProfile => Boolean(row));
+  }
+
+  /** Env override, then the profile of an existing ChatGPT tab, then Orca's default. Never a hardcoded id. */
+  async resolveProfileId(signal?: AbortSignal): Promise<string> {
+    const preferred = (process.env[PROFILE_ENV_VAR] ?? "").trim();
+    if (preferred) {
+      const profiles = await this.listProfiles(signal);
+      const match = profiles.find((profile) => profile.id === preferred)
+        ?? profiles.find((profile) => (profile.label ?? "").toLowerCase() === preferred.toLowerCase());
+      if (!match) {
+        const available = profiles.map((profile) => profile.label ?? profile.id).join("、") || "无";
+        throw new OrcaClientError(`${PROFILE_ENV_VAR}="${preferred}" 未匹配任何 Orca profile；可用：${available}`);
+      }
+      return match.id;
+    }
+    const existing = (await this.findChatPages(signal)).find((page) => page.profileId);
+    return existing?.profileId ?? "default";
+  }
+
+  /** Reuse the saved tab when it still exists, otherwise create one in the current worktree. */
+  async ensureChatPage(input: { browserPageId?: string; signal?: AbortSignal } = {}): Promise<{ page: OrcaPage; worktree: OrcaWorktree; created: boolean }> {
+    const worktree = await this.resolveWorktree(input.signal);
+    if (input.browserPageId) {
+      const existing = await this.findTabById(input.browserPageId, input.signal);
+      if (existing && isChatGptUrl(existing.url)) return { page: existing, worktree, created: false };
+    }
+    const profileId = await this.resolveProfileId(input.signal);
+    const created = pageFields(await this.run<unknown>([
+      "tab", "create", "--url", "https://chatgpt.com/", "--worktree", `path:${this.cwd}`, "--profile", profileId,
+    ], input.signal));
+    if (!created || !isChatGptUrl(created.url)) throw new OrcaClientError("Orca 未返回可用的 ChatGPT 标签页");
+    return { page: created, worktree, created: true };
+  }
+
+  async closePage(pageId: string, signal?: AbortSignal): Promise<void> {
+    await this.run(["tab", "close", "--page", pageId], signal);
   }
 
   async snapshot(pageId: string, signal?: AbortSignal): Promise<OrcaSnapshot> {

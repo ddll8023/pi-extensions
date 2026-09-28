@@ -13,12 +13,13 @@ description: >-
 - The local Pi session is the executor: inspect only task-relevant project files, check facts, implement only approved changes, run only approved validation, and report evidence. The local provider and model are deliberately unspecified: do not read, verify, request, or switch the local model, and never pause or fail because the local model differs.
 - The ChatGPT web planner provides the overall plan, one independently verifiable phase at a time, and reviews evidence. It does not control the computer and cannot authorize local changes or tests.
 - Run Pi from the root of the same project/worktree registered in Orca; the extension will not register or switch workspaces automatically.
-- Use ordinary ChatGPT chat in the dedicated Orca Profile, not Work mode, another browser, API, MCP, or a third model. If profile identity or Chat/Work state cannot be read back, pause.
+- Use ordinary ChatGPT chat in the Orca browser profile resolved at runtime, not Work mode, another browser, API, MCP, or a third model. If Chat/Work state, the model selection, or the effort level cannot be read back, pause.
 
 ## V1 transfer boundary
 
 - V1 is text-only. Never invoke file upload, browser computer-use, API, MCP, or a bridge service.
-- Use the dedicated Orca Profile for ChatGPT. If Orca does not expose its profile ID, treat Profile identity as a manual prerequisite; do not claim it was independently verified.
+- The extension reuses its saved ChatGPT tab or creates one in the current Orca workspace, and closes it on `/sol-stop`. Run Pi from a directory that is already an Orca workspace; the extension never registers or switches workspaces.
+- Profile resolution order: environment variable `WEB_GPT_PLANNER_ORCA_PROFILE` (profile id or label), then the profile of an existing ChatGPT tab, then Orca's `default`. Never hardcode or assume a machine-specific profile id; do not claim profile identity was independently verified.
 - Include only task-relevant, explicitly selected, non-sensitive source text and relative paths. Do not read or send credentials, cookies, tokens, `.env`, private keys, `.git`, `node_modules`, build outputs, or `.pi/sol-planner` records.
 - Use the extension's cumulative 12,000 estimated-token task budget. If the estimate is unavailable or the task would exceed the remaining budget, pause and ask the user to reduce scope. This estimates submitted text only, not ChatGPT billing. Do not silently truncate, summarize away evidence, or switch to attachments.
 - Before the first outbound exchange containing new source paths, let the extension show those paths and a text preview for user confirmation. The project `.pi/sol-planner/` directory must be Git-ignored; the extension refuses to add ignore rules itself.
@@ -26,7 +27,7 @@ description: >-
 
 ## Workflow
 
-1. `/sol-plan <task>` creates one task only after Orca, the ChatGPT page, chat mode, model, and effort preflight succeeds. If any state is unknown, stop.
+1. `/sol-plan <task>` creates one task only after the Orca workspace, ChatGPT tab (reused or newly created), chat mode, model, and effort preflight succeeds. If any state is unknown, stop.
 2. Perform bounded local discovery. Separate verified facts, assumptions, and open questions. Do not draft a complete independent implementation plan before the web planner has the required context.
 3. Call `web_gpt_exchange` for one exchange. Include exact task/phase information, relevant allowlisted source paths in the required `sourceFiles` array (use `[]` when no project files are included), and the filtered text context. If new source paths are requested, the extension asks the user before sending. Wait for the extension-delivered response; do not repeatedly poll or resubmit.
 4. The web planner must return exactly one JSON envelope matching the active IDs:
