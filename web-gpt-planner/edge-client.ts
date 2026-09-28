@@ -107,29 +107,47 @@ async function connectDefault(webSocketDebuggerUrl: string): Promise<CdpConnecti
   };
 }
 
+/** 思考强度的可选值（中英文）；用于把输入框容器里的强度控件从其他按钮中认出来。 */
+const LEVEL_NAMES = ["极高", "高", "中", "轻", "轻度", "极速", "低", "Extended", "Extreme", "High", "Medium", "Low", "Minimal"];
+
+/**
+ * 页面脚本共用的前置片段：把控件查找限定在输入框所在的 form（无 form 时用输入框的上层容器）内。
+ * 绝不全局扫描按钮：侧边栏的「探索」等控件也带 aria-haspopup，全局兜底会误选。
+ */
+const TRIGGER_PREAMBLE = `
+  const LEVELS = ${JSON.stringify(LEVEL_NAMES)};
+  const composerEl = document.querySelector("form div[role='textbox'][contenteditable='true'], div[role='textbox'][contenteditable='true']");
+  const formEl = composerEl ? composerEl.closest("form") : null;
+  const scopeEl = formEl || (composerEl && composerEl.parentElement ? (composerEl.parentElement.parentElement || composerEl.parentElement) : null);
+  const controlEls = scopeEl ? [...scopeEl.querySelectorAll("button, [role='button']")] : [];
+  const ariaOf = (el) => el.getAttribute("aria-label") || "";
+  const textOf = (el) => (el.innerText || "").replace(/\\s+/g, " ").trim();
+  const isLevel = (value) => LEVELS.some((level) => value === level || value === "思考强度 " + level || value.endsWith(" " + level));
+  const describedOf = (el) => ariaOf(el) + " " + (el.getAttribute("data-testid") || "") + " " + (el.getAttribute("data-codex-intelligence-trigger") || "");
+  const findTrigger = () => controlEls.find((el) => el.hasAttribute("data-codex-intelligence-trigger"))
+    || controlEls.find((el) => /模型|思考强度|model|thinking|effort|intelligence/i.test(describedOf(el)))
+    || controlEls.find((el) => isLevel(textOf(el)))
+    || controlEls.find((el) => el.getAttribute("aria-haspopup") === "menu")
+    || null;
+  const describeControls = () => controlEls.slice(0, 8).map((el) => ariaOf(el) + "|" + textOf(el) + "|" + (el.getAttribute("aria-haspopup") || ""));
+`;
+
 /** 页面侧脚本：只读取状态，不做任何点击。 */
-export const PAGE_STATE_SCRIPT = `(() => {
-  const composer = document.querySelector("form div[role='textbox'][contenteditable='true'], div[role='textbox'][contenteditable='true']");
-  const form = composer ? composer.closest("form") : null;
-  const buttons = form ? [...form.querySelectorAll("button")] : [];
-  const aria = (el) => el.getAttribute("aria-label") || "";
-  const trigger = document.querySelector("[data-codex-intelligence-trigger]")
-    || document.querySelector("button[aria-label*='模型'], button[aria-label*='model']")
-    || (form ? form.querySelector("button[aria-haspopup='menu']") : null)
-    || document.querySelector("button[aria-haspopup='menu']");
-  const triggerText = trigger ? (trigger.innerText || "").replace(/\\s+/g, " ").trim() : "";
+export const PAGE_STATE_SCRIPT = `(() => {${TRIGGER_PREAMBLE}
+  const trigger = findTrigger();
   return {
     href: location.href,
     pathname: location.pathname,
     search: location.search,
-    composerFound: !!composer,
-    composerLength: composer ? (composer.innerText || "").length : 0,
+    composerFound: !!composerEl,
+    composerLength: composerEl ? (composerEl.innerText || "").length : 0,
     triggerFound: !!trigger,
-    triggerText: triggerText || (trigger ? aria(trigger).replace(/\\s+/g, " ").trim() : ""),
-    triggerLabel: trigger ? aria(trigger) : "",
-    triggerSelector: trigger && trigger.hasAttribute("data-codex-intelligence-trigger") ? "intelligence" : (trigger ? "fallback" : "none"),
-    hasSend: buttons.some((b) => /^(发送|Send)/i.test(aria(b))),
-    hasStop: buttons.some((b) => /^(停止|Stop)/i.test(aria(b))),
+    triggerText: trigger ? (textOf(trigger) || ariaOf(trigger).replace(/\\s+/g, " ").trim()) : "",
+    triggerLabel: trigger ? ariaOf(trigger) : "",
+    triggerSelector: !trigger ? "none" : trigger.hasAttribute("data-codex-intelligence-trigger") ? "intelligence" : /模型|model|thinking|effort|intelligence/i.test(describedOf(trigger)) ? "label" : isLevel(textOf(trigger)) ? "level" : "menu",
+    controls: describeControls(),
+    hasSend: controlEls.some((el) => /(发送|send)/i.test(ariaOf(el))),
+    hasStop: controlEls.some((el) => /(停止|stop)/i.test(ariaOf(el))),
   };
 })()`;
 
@@ -343,16 +361,18 @@ export class EdgeClient {
     if (!isNormalChatUrl(state.href)) throw new EdgeClientError("当前不是普通聊天页面（可能位于 GPT、项目或临时聊天）；请切换到普通聊天后重试");
     if (!state.composerFound) throw new EdgeClientError(`当前页面没有可用的输入框（URL：${state.href}）；请在该标签页登录 ChatGPT 后重试`);
     if (!state.triggerFound) {
-      throw new EdgeClientError(`未找到思考强度控件（URL：${state.href}，输入框：有）；请确认该标签页是已登录的普通 ChatGPT 聊天页后重试`);
+      const seen = state.controls && state.controls.length > 0 ? `；输入框区域控件：${state.controls.join(" / ")}` : "";
+      throw new EdgeClientError(`未找到思考强度控件（URL：${state.href}，输入框：有${seen}）；请确认该标签页是已登录的普通 ChatGPT 聊天页后重试`);
     }
     const reading = state.triggerText;
     const thinkingLevel = parseThinkingLevel(reading);
     if (!EXPECTED_THINKING_LEVELS.includes(thinkingLevel)) {
       throw new EdgeClientError(`网页思考强度不是「极高」（当前：${thinkingLevel || `未识别，控件文本为「${reading || "空"}」`}）；请在网页里手动设置后重试`);
     }
-    const model = await this.readCheckedModel(targetId, signal);
+    const { model, items } = await this.readCheckedModel(targetId, signal);
     if (!EXPECTED_MODELS.includes(model)) {
-      throw new EdgeClientError(`网页模型不是「最新」（当前：${model || "未知"}）；请在网页里手动选择「最新」后重试`);
+      const seen = items.length > 0 ? `；菜单项：${items.slice(0, 8).join(" / ")}` : "";
+      throw new EdgeClientError(`网页模型不是「最新」（当前：${model || "未知"}${seen}）；请在网页里手动选择「最新」后重试`);
     }
     return { model, thinkingLevel, mode: "chat" };
   }
@@ -371,16 +391,21 @@ export class EdgeClient {
     return result?.result?.value;
   }
 
-  /** 打开模型菜单读出被勾选的模型，然后按 Esc 关闭（不改变选择）。 */
-  async readCheckedModel(targetId: string, signal?: AbortSignal): Promise<string> {
-    const opened = await this.evaluate(targetId, `(() => { const t = document.querySelector("[data-codex-intelligence-trigger]") || document.querySelector("button[aria-label*='模型'], button[aria-label*='model']") || document.querySelector("button[aria-haspopup='menu']"); if (!t) return false; t.click(); return true; })()`, signal);
+  /** 打开模型菜单读出被勾选的模型与菜单项，然后按 Esc 关闭（不改变选择）。 */
+  async readCheckedModel(targetId: string, signal?: AbortSignal): Promise<{ model: string; items: string[] }> {
+    const opened = await this.evaluate(targetId, `(() => {${TRIGGER_PREAMBLE}
+      const t = findTrigger();
+      if (!t) return false;
+      t.click();
+      return true;
+    })()`, signal);
     if (opened !== true) throw new EdgeClientError("未找到模型选择控件，无法读回当前模型");
     try {
       const deadline = this.now() + 8_000;
       while (this.now() < deadline) {
         await this.sleep(400, signal);
-        const menu = await this.evaluate(targetId, MENU_MODELS_SCRIPT, signal) as { open?: boolean; checked?: string[] } | undefined;
-        if (menu?.open) return menu.checked?.[0] ?? "";
+        const menu = await this.evaluate(targetId, MENU_MODELS_SCRIPT, signal) as { open?: boolean; checked?: string[]; all?: string[] } | undefined;
+        if (menu?.open) return { model: menu.checked?.[0] ?? "", items: menu.all ?? [] };
       }
       throw new EdgeClientError("模型菜单未打开，无法读回当前模型");
     } finally {
@@ -392,7 +417,12 @@ export class EdgeClient {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const stillOpen = await this.evaluate(targetId, `(() => document.querySelectorAll('[role="menu"]').length > 0)()`);
       if (stillOpen !== true) return;
-      await this.evaluate(targetId, `(() => { const t = document.querySelector("[data-codex-intelligence-trigger]") || document.querySelector("button[aria-label*='模型'], button[aria-label*='model']") || document.querySelector("button[aria-haspopup='menu']"); if (t) { t.click(); return true; } document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return true; })()`);
+      await this.evaluate(targetId, `(() => {${TRIGGER_PREAMBLE}
+        const t = findTrigger();
+        if (t) { t.click(); return true; }
+        document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        return true;
+      })()`);
       await this.sleep(200);
     }
   }
@@ -490,6 +520,7 @@ export interface PageState {
   triggerText: string;
   triggerLabel: string;
   triggerSelector: string;
+  controls: string[];
   hasSend: boolean;
   hasStop: boolean;
 }

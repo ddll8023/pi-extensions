@@ -3,7 +3,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { EdgeClient, EdgeClientError, isNormalChatUrl, parseThinkingLevel, type CdpConnection, type ExecLike } from "../edge-client.ts";
+import { EdgeClient, EdgeClientError, PAGE_STATE_SCRIPT, isNormalChatUrl, parseThinkingLevel, type CdpConnection, type ExecLike } from "../edge-client.ts";
 
 const CHAT_URL = "https://chatgpt.com/";
 
@@ -197,11 +197,23 @@ test("ensureChatPage 复用不带会话 ID 的首页标签页", async () => {
   assert.equal(connection.calls.some((call) => call.method === "Target.createTarget"), false);
 });
 
-test("preflight 在「最新 + 极高」时通过并关闭模型菜单", async () => {
+test("preflight 在「最新 + 极高」时通过，并只点击一次触发控件", async () => {
   const { client, connection } = makeHarness();
   assert.deepEqual(await client.preflight("saved"), { model: "最新", thinkingLevel: "极高", mode: "chat" });
-  const triggerClicks = connection.calls.filter((call) => String(call.params.expression ?? "").includes("data-codex-intelligence-trigger"));
-  assert.equal(triggerClicks.length, 1);
+  const clicks = connection.calls.filter((call) => String(call.params.expression ?? "").includes("t.click()"));
+  assert.equal(clicks.length, 1);
+});
+
+test("页面状态脚本只在输入框容器内查找触发控件", () => {
+  assert.match(PAGE_STATE_SCRIPT, /scopeEl\.querySelectorAll/);
+  // 不得再出现全局的按钮兜底：侧边栏「探索」也带 aria-haspopup，会被误选。
+  assert.equal(PAGE_STATE_SCRIPT.includes('document.querySelector("button'), false);
+  assert.match(PAGE_STATE_SCRIPT, /findTrigger/);
+});
+
+test("preflight 控件缺失时报出输入框区域的实际控件", async () => {
+  const { client } = makeHarness({ state: { triggerFound: false, triggerText: "", controls: ["探索||menu"] } });
+  await assert.rejects(() => client.preflight("saved"), /未找到思考强度控件.*输入框区域控件：探索\|\|menu/s);
 });
 
 test("preflight 在思考强度不符时抛错", async () => {
