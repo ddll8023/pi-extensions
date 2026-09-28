@@ -41,6 +41,7 @@ pi install git:github.com/ddll8023/pi-extensions
 - `permission-mode`：命令 `/permission-mode`
 - `token-rate`：显示 Token 生成速率
 - `status-footer`：自定义底部状态栏
+- `web-gpt-planner`：文本优先的 ChatGPT 网页规划协作，命令 `/sol-plan`、`/sol-status`、`/sol-resume`、`/sol-stop`；V1 不自动上传附件
 
 ## 安装后验证
 
