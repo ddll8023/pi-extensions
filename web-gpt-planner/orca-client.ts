@@ -19,6 +19,7 @@ export interface OrcaPage {
   url: string;
   profileId?: string;
   worktreeId?: string;
+  index?: number;
 }
 
 export interface OrcaProfile {
@@ -84,7 +85,26 @@ function pageFields(value: unknown): OrcaPage | undefined {
     url,
     ...(typeof profileId === "string" ? { profileId } : {}),
     ...(typeof worktreeId === "string" ? { worktreeId } : {}),
+    ...(typeof row.index === "number" ? { index: row.index } : {}),
   };
+}
+
+/** `tab create` may omit the URL and older hosts discard the page id entirely. */
+function createdPageId(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const row = value as Record<string, unknown>;
+  const id = row.browserPageId ?? row.pageId ?? row.id;
+  return typeof id === "string" ? id : undefined;
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
 }
 
 function rowsOf(value: unknown, key: string): unknown[] {
@@ -198,12 +218,28 @@ export class OrcaClient {
       const existing = await this.findTabById(input.browserPageId, input.signal);
       if (existing && isChatGptUrl(existing.url)) return { page: existing, worktree, created: false };
     }
+    const before = new Set((await this.listTabs(`path:${this.cwd}`, input.signal)).map((page) => page.browserPageId));
     const profileId = await this.resolveProfileId(input.signal);
-    const created = pageFields(await this.run<unknown>([
+    const created = await this.run<unknown>([
       "tab", "create", "--url", "https://chatgpt.com/", "--worktree", `path:${this.cwd}`, "--profile", profileId,
-    ], input.signal));
-    if (!created || !isChatGptUrl(created.url)) throw new OrcaClientError("Orca 未返回可用的 ChatGPT 标签页");
-    return { page: created, worktree, created: true };
+    ], input.signal);
+    const page = await this.waitForNewChatPage(createdPageId(created), before, input.signal);
+    if (!page) throw new OrcaClientError("Orca 未返回可用的 ChatGPT 标签页");
+    return { page, worktree, created: true };
+  }
+
+  /** The create payload cannot be trusted for URL or profile, so confirm the tab by re-listing it. */
+  private async waitForNewChatPage(createdId: string | undefined, before: Set<string>, signal?: AbortSignal): Promise<OrcaPage | undefined> {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (signal?.aborted) return undefined;
+      const chatPages = (await this.listTabs(`path:${this.cwd}`, signal)).filter((page) => isChatGptUrl(page.url));
+      const match = createdId
+        ? chatPages.find((page) => page.browserPageId === createdId)
+        : [...chatPages].filter((page) => !before.has(page.browserPageId)).sort((a, b) => (b.index ?? 0) - (a.index ?? 0))[0];
+      if (match) return match;
+      await delay(500, signal);
+    }
+    return undefined;
   }
 
   async closePage(pageId: string, signal?: AbortSignal): Promise<void> {

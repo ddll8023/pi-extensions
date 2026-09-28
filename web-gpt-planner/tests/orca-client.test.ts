@@ -87,23 +87,50 @@ test("ensureChatPage reuses a saved page id without creating another tab", async
   assert.equal(ensured.page.browserPageId, "saved");
 });
 
-test("ensureChatPage creates a tab in the current worktree when no saved tab exists", async () => {
+test("ensureChatPage confirms a newly created tab when the create payload omits the URL", async () => {
   await withProfileEnv(undefined, async () => {
     const created: string[][] = [];
+    let listCalls = 0;
     const client = new OrcaClient(async (_command, args) => {
       if (args[0] === "worktree") return result([{ id: "r::D:/project", path: "D:/project" }]);
-      if (args[1] === "list") return result({ tabs: [] });
+      if (args[1] === "list") {
+        listCalls += 1;
+        return result({ tabs: listCalls === 1 ? [] : [{ browserPageId: "new-page", url: "https://chatgpt.com/", profileId: "default", index: 2 }] });
+      }
       if (args[1] === "create") {
         created.push(args);
-        return result({ browserPageId: "new-page", url: "https://chatgpt.com/", profileId: "default" });
+        return result({ browserPageId: "new-page" });
       }
       throw new Error(`unexpected ${args.join(" ")}`);
     }, "orca", "D:\\project");
     const ensured = await client.ensureChatPage();
     assert.equal(ensured.created, true);
     assert.equal(ensured.page.browserPageId, "new-page");
+    assert.equal(ensured.page.url, "https://chatgpt.com/");
     assert.equal(ensured.worktree.id, "r::D:/project");
     assert.deepEqual(created[0], ["tab", "create", "--url", "https://chatgpt.com/", "--worktree", "path:D:\\project", "--profile", "default"]);
+  });
+});
+
+test("ensureChatPage falls back to the newest new tab when the create payload has no id", async () => {
+  await withProfileEnv(undefined, async () => {
+    let listCalls = 0;
+    const client = new OrcaClient(async (_command, args) => {
+      if (args[0] === "worktree") return result([{ id: "r::D:/project", path: "D:/project" }]);
+      if (args[1] === "list") {
+        listCalls += 1;
+        return result({ tabs: listCalls === 1
+          ? [{ browserPageId: "old-page", url: "https://chatgpt.com/c/old", index: 1 }]
+          : [
+              { browserPageId: "old-page", url: "https://chatgpt.com/c/old", index: 1 },
+              { browserPageId: "fresh-page", url: "https://chatgpt.com/", index: 2 },
+            ] });
+      }
+      if (args[1] === "create") return result({ ok: true });
+      throw new Error(`unexpected ${args.join(" ")}`);
+    }, "orca", "D:\\project");
+    const ensured = await client.ensureChatPage();
+    assert.equal(ensured.page.browserPageId, "fresh-page");
   });
 });
 
