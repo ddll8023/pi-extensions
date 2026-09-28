@@ -137,7 +137,7 @@ export class PlannerWorker {
     await store.writeTask(state);
     await store.writeExchange(state.taskId, pending.exchangeId, { request: pending, response: result, fingerprint });
     if (result.kind === "PLAN" || result.kind === "REVIEW") await store.writeCurrentPlan(state.taskId, result.body);
-    if (result.kind === "REVIEW") await store.writeCurrentReport(state.taskId, result.body);
+    if (result.kind === "REVIEW") await store.writeCurrentReview(state.taskId, result.body);
 
     this.dependencies.pi.sendUserMessage(
       `web-gpt-planner 收到同一交互的网页回复。exchange_id=${pending.exchangeId}\nkind=${result.kind}${result.kind === "REVIEW" ? ` decision=${result.decision}` : ""}\n\n${result.body}`,

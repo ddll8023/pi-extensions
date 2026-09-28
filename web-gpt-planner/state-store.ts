@@ -292,6 +292,13 @@ export class PlannerTaskStore {
     await writeAtomic(join(directory, "report.md"), `${report.trim()}\n`);
   }
 
+  /** 规划方的复核正文单独落盘；不得覆盖由本地执行者维护的 report.md。 */
+  async writeCurrentReview(taskId: string, review: string): Promise<void> {
+    const directory = this.taskDir(taskId);
+    await this.assertProjectChild(directory);
+    await writeAtomic(join(directory, "review.md"), `${review.trim()}\n`);
+  }
+
   async releaseActive(taskId: string): Promise<void> {
     const active = await this.readActive();
     if (!active || active.taskId !== taskId) return;
