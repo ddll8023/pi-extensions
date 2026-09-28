@@ -141,7 +141,8 @@ export const PAGE_STATE_SCRIPT = `(() => {${TRIGGER_PREAMBLE}
     search: location.search,
     visible: document.visibilityState === "visible",
     composerFound: !!composerEl,
-    composerLength: composerEl ? (composerEl.innerText || "").length : 0,
+    composerLength: composerEl ? (composerEl.innerText || "").trim().length : 0,
+    composerEmpty: composerEl ? !(composerEl.innerText || "").trim() : false,
     triggerFound: !!trigger,
     triggerText: trigger ? (textOf(trigger) || ariaOf(trigger).replace(/\\s+/g, " ").trim()) : "",
     triggerLabel: trigger ? ariaOf(trigger) : "",
@@ -495,7 +496,10 @@ export class EdgeClient {
     if (expectedUrl && new URL(expectedUrl).pathname !== new URL(state.href).pathname) {
       throw new EdgeClientError("提交前页面已切换到其他会话；已放弃发送");
     }
-    if (state.composerLength > 0) throw new EdgeClientError("ChatGPT 输入框里已有内容，不会覆盖；请清空后重试");
+    // 空输入框里有一个占位段落，innerText 可能是换行符，所以按去空白后的长度判断。
+    if (state.composerLength > 0 || state.composerEmpty === false) {
+      throw new EdgeClientError(`ChatGPT 输入框里已有 ${state.composerLength ?? 0} 个字符的内容，不会覆盖；请清空后重试`);
+    }
     if (!state.composerFound) throw new EdgeClientError("当前页面没有可用的输入框；已放弃发送");
 
     // 后台标签页里输入不会生效（visibilityState=hidden、hasFocus=false），必须先激活。
@@ -568,6 +572,7 @@ export interface PageState {
   search: string;
   composerFound: boolean;
   composerLength: number;
+  composerEmpty: boolean;
   triggerFound: boolean;
   triggerText: string;
   triggerLabel: string;

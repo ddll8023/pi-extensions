@@ -57,6 +57,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     visible: true,
     composerFound: true,
     composerLength: 0,
+    composerEmpty: true,
     triggerFound: true,
     triggerText: "思考强度 极高",
     hasSend: true,
@@ -234,9 +235,14 @@ test("preflight 拒绝非普通聊天页面", async () => {
 });
 
 test("fillAndSend 在输入框已有内容时拒绝发送", async () => {
-  const { client, connection } = makeHarness({ state: { composerLength: 12 } });
-  await assert.rejects(() => client.fillAndSend("saved", "hello"), /输入框里已有内容/);
+  const { client, connection } = makeHarness({ state: { composerLength: 12, composerEmpty: false } });
+  await assert.rejects(() => client.fillAndSend("saved", "hello"), /已有 12 个字符的内容/);
   assert.equal(connection.calls.some((call) => call.method === "Input.insertText"), false);
+});
+
+test("页面状态脚本按去空白后的长度判断输入框是否为空", () => {
+  assert.match(PAGE_STATE_SCRIPT, /composerLength: composerEl \? \(composerEl\.innerText \|\| ""\)\.trim\(\)\.length/);
+  assert.match(PAGE_STATE_SCRIPT, /composerEmpty:/);
 });
 
 test("fillAndSend 在页面已切换会话时拒绝发送", async () => {
