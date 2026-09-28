@@ -128,7 +128,11 @@ export function parseInboundExchange(text: string, expected: ExchangeIdentity): 
   }
   if (value.plan_version !== expected.planVersion) throw new Error("planner response has a stale plan version");
   if (!(value.kind === "NEED_CONTEXT" || value.kind === "PLAN" || value.kind === "REVIEW")) throw new Error("unsupported planner response kind");
-  if (typeof value.body !== "string" || value.body.trim() === "") throw new Error("planner response body is empty");
+  const declaredBody = typeof value.body === "string" ? value.body.trim() : "";
+  // 兼容别名：网页端常按请求信封的字段名镜像，把正文放在 text 里（请求自身用的就是 text）。
+  const aliasedBody = typeof value.text === "string" ? value.text.trim() : "";
+  const resolvedBody = declaredBody !== "" ? declaredBody : aliasedBody;
+  if (resolvedBody === "") throw new Error("planner response body is empty (neither body nor text is filled)");
 
   let decision: ReviewDecision | undefined;
   let nextPhaseId: string | undefined;
@@ -156,7 +160,7 @@ export function parseInboundExchange(text: string, expected: ExchangeIdentity): 
     phase_id: expected.phaseId,
     plan_version: expected.planVersion,
     kind: value.kind,
-    body: value.body.trim(),
+    body: resolvedBody,
     ...(decision ? { decision } : {}),
     ...(nextPhaseId ? { next_phase_id: nextPhaseId } : {}),
     ...(nextPlanVersion ? { next_plan_version: nextPlanVersion } : {}),

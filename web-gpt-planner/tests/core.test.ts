@@ -36,6 +36,33 @@ const exchangeId = "ba7b6128-90db-47e8-ae7a-7b9831439801";
   assert.throws(() => parseInboundExchange("{}", { taskId, exchangeId, phaseId: "phase-1", planVersion: 1 }));
 });
 
+test("planner 把正文放在 text 里时仍能解析（兼容别名）", () => {
+  const identity = { taskId, exchangeId, phaseId: "phase-1", planVersion: 1 };
+  const aliased = parseInboundExchange(JSON.stringify({
+    protocol_version: 1,
+    task_id: taskId,
+    exchange_id: exchangeId,
+    phase_id: "phase-1",
+    plan_version: 1,
+    kind: "PLAN",
+    text: "阶段一计划：……",
+  }), identity);
+  assert.equal(aliased.body, "阶段一计划：……");
+  assert.throws(
+    () => parseInboundExchange(JSON.stringify({
+      protocol_version: 1,
+      task_id: taskId,
+      exchange_id: exchangeId,
+      phase_id: "phase-1",
+      plan_version: 1,
+      kind: "PLAN",
+      body: "   ",
+      text: "",
+    }), identity),
+    /body is empty/,
+  );
+});
+
 test("source paths reject traversal and credential-like locations", () => {
   assert.equal(validateSourcePath("src/main.ts"), "src/main.ts");
   assert.throws(() => validateSourcePath("../secret.txt"));

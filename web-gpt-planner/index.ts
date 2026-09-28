@@ -436,7 +436,8 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
         sourceFiles,
       });
       const wrappedText = [
-        "请严格按 web-gpt-planner 协议返回一个 JSON 对象，不要省略关联标识。",
+        "请严格按 web-gpt-planner 协议只返回一个 JSON 对象，不要省略任何关联标识字段，也不要附加解释文字。",
+        "响应字段（区分大小写）：protocol_version 固定为 1；task_id、exchange_id、phase_id、plan_version 必须与下方请求逐字一致；kind 取 NEED_CONTEXT、PLAN 或 REVIEW；正文放在 body 字段（不要用 text 字段）。kind 为 REVIEW 时还需 decision（CONTINUE、REVISE、NEED_CONTEXT 或 COMPLETE），并给出更大的 next_plan_version（CONTINUE 另需 next_phase_id）。",
         JSON.stringify(request, null, 2),
       ].join("\n\n");
       if (containsLikelySecret(wrappedText)) return resultText("交接文本疑似包含凭据或私密值；已拒绝发送。", true);
