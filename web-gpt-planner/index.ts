@@ -303,6 +303,25 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
           return;
         }
       }
+      // 超时等导致的暂停：只要原线程里仍能找到本次交互，就认作已提交并恢复等待（不重发）。
+      if (state.status === "paused" && state.pending) {
+        try {
+          await rebindActivePage(edgeFor(), store, state);
+          const reply = await edgeFor().getReply(state.browserPageId!, state.pending.exchangeId);
+          if (reply.occurrences < 1) {
+            ctx.ui.notify("原线程里找不到本次交互，没有发出任何内容；请用 /sol-stop 后重开任务。", "warning");
+            return;
+          }
+          state.pending.submissionState = "accepted";
+          state.status = "waiting";
+          state.pauseReason = undefined;
+          await store.writeTask(state);
+          ctx.ui.notify(`已确认原交互已提交（线程中出现 ${reply.occurrences} 次），恢复等待回复：${state.pending.exchangeId}`, "info");
+        } catch (error) {
+          ctx.ui.notify(`原交互核对失败：${errorText(error)}；不会重发。`, "warning");
+          return;
+        }
+      }
       if (state.status === "waiting" && state.pending) {
         try {
           await rebindActivePage(edgeFor(), store, state);
