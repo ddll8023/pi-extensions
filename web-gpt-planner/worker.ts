@@ -1,12 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { exchangeFingerprint, parseInboundExchange, type ExchangeIdentity } from "./exchange-protocol.ts";
 import { PlannerTaskStore, type PlannerTaskState } from "./state-store.ts";
-import { OrcaClient } from "./orca-client.ts";
+import { EdgeClient } from "./edge-client.ts";
 
 export interface WorkerDependencies {
   pi: ExtensionAPI;
   storeFor(cwd: string): PlannerTaskStore;
-  orcaFor(cwd: string): OrcaClient;
+  edgeFor(): EdgeClient;
   getContext(): ExtensionContext | undefined;
   intervalMs?: number;
 }
@@ -65,7 +65,7 @@ export class PlannerWorker {
         this.stop();
         return;
       }
-      await this.pollExchange(store, state, this.dependencies.orcaFor(ctx.cwd));
+      await this.pollExchange(store, state, this.dependencies.edgeFor());
     } catch (error) {
       const ctx = this.dependencies.getContext();
       if (ctx) ctx.ui.setStatus("web-gpt-planner", ctx.ui.theme.fg("warning", `网页协作等待失败：${error instanceof Error ? error.message : String(error)}`));
@@ -75,18 +75,18 @@ export class PlannerWorker {
     }
   }
 
-  private async pollExchange(store: PlannerTaskStore, state: PlannerTaskState, orca: OrcaClient): Promise<void> {
+  private async pollExchange(store: PlannerTaskStore, state: PlannerTaskState, edge: EdgeClient): Promise<void> {
     const pending = state.pending;
     if (!pending) return;
-    if (await orca.isGenerating(state.browserPageId!)) return;
-    const messages = await orca.getActiveMessages(state.browserPageId!);
-    const userIndex = messages.findLastIndex((message) => message.role === "user" && message.text.includes(pending.exchangeId));
-    const assistant = userIndex >= 0
-      ? messages.slice(userIndex + 1).findLast((message) => message.role === "assistant")
-      : undefined;
-    if (!assistant || messages.at(-1)?.role !== "assistant") return;
+    if (await edge.isGenerating(state.browserPageId!)) return;
+    // 回合元素本身没有属性，因此用「包含本次 exchangeId 的回合」定位用户消息，紧随其后的最后一个回合即回复。
+    const turns = await edge.getActiveTurns(state.browserPageId!);
+    const userIndex = turns.findLastIndex((turn) => turn.text.includes(pending.exchangeId));
+    if (userIndex < 0 || userIndex !== turns.length - 2) return;
+    const reply = turns.at(-1);
+    if (!reply) return;
 
-    const fingerprint = exchangeFingerprint(assistant.text);
+    const fingerprint = exchangeFingerprint(reply.text);
     const previous = this.stableResponses.get(pending.exchangeId);
     if (!previous || previous.fingerprint !== fingerprint) {
       this.stableResponses.set(pending.exchangeId, { fingerprint, observations: 1 });
@@ -103,7 +103,7 @@ export class PlannerWorker {
     };
     let result;
     try {
-      result = parseInboundExchange(assistant.text, identity);
+      result = parseInboundExchange(reply.text, identity);
     } catch (error) {
       if (this.stopped) return;
       const current = await store.readTask(state.taskId);

@@ -41,7 +41,7 @@ pi install git:github.com/ddll8023/pi-extensions
 - `permission-mode`：命令 `/permission-mode`
 - `token-rate`：显示 Token 生成速率
 - `status-footer`：自定义底部状态栏
-- `web-gpt-planner`：文本优先的 ChatGPT 网页规划协作，命令 `/sol-plan`、`/sol-status`、`/sol-resume`、`/sol-stop`；V1 不自动上传附件；标签页按需新建/复用，profile 可用环境变量 `WEB_GPT_PLANNER_ORCA_PROFILE` 指定
+- `web-gpt-planner`：文本优先的 ChatGPT 网页规划协作，命令 `/sol-plan`、`/sol-status`、`/sol-resume`、`/sol-stop`；V1 不自动上传附件；通过固定 CDP 端口（`127.0.0.1:9222`，可用 `WEB_GPT_PLANNER_EDGE_PORT` 覆盖）直连**专用 Edge 实例**，标签页按需新建/复用，停止时关闭自建标签页；不依赖 `edge://inspect` 人工授权
 
 ## 安装后验证
 

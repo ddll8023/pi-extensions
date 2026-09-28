@@ -33,9 +33,10 @@ export interface PlannerTaskState {
   taskId: string;
   projectRoot: string;
   sessionName?: string;
+  /** 绑定的 ChatGPT 标签页 CDP targetId。 */
   browserPageId?: string;
-  browserProfileId?: string;
-  worktreeId?: string;
+  /** 该标签页是否由本扩展创建（复用的用户标签页不会在停止时被关闭）。 */
+  createdTab?: boolean;
   chatUrl?: string;
   allowedSourceFiles: string[];
   selectedModel?: string;

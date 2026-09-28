@@ -10,8 +10,8 @@
 - `token-rate/`：在模型生成期间显示当前 AI 回复的 Token 生成速率。
 - `status-footer/`：自定义底部 Footer，隐藏 MCP 状态，并将插件状态分成最多两行显示。
 - `web-gpt-planner/`：文本优先的 ChatGPT 网页规划协作；命令 `/sol-plan`、`/sol-status`、`/sol-resume`、`/sol-stop`，V1 不自动上传附件。
-  - 无需预先打开标签页：`/sol-plan` 会在当前 Orca 工作区复用或新建 ChatGPT 标签页，`/sol-stop` 关闭它。
-  - 浏览器 profile 不写死：优先环境变量 `WEB_GPT_PLANNER_ORCA_PROFILE`（id 或 label），否则复用已有 ChatGPT 标签页的 profile，否则用 Orca `default`。
+  - 无需预先打开标签页：`/sol-plan` 会在专用 Edge 实例里复用或新建 ChatGPT 标签页，`/sol-stop` 关闭自建的那个（复用的不关）。
+  - 不依赖 `edge://inspect` 人工授权：直连固定 CDP 端口 `http://127.0.0.1:9222`，可用 `WEB_GPT_PLANNER_EDGE_PORT` 覆盖，`WEB_GPT_PLANNER_EDGE_LAUNCHER` 指定启动脚本（默认 `%LOCALAPPDATA%\PiAgent\PiAgent-Edge.bat`，端点未运行时会拉起它）；登录态保存在专用 Profile `%LOCALAPPDATA%\Microsoft\Edge\PiAgentProfile`，不碰你日常 Edge 的 Profile。
   - 网页侧仍要求“聊天模式 + 最新 + 思考极高”；读回不符或无法确认时暂停，需手动设置后 `/sol-resume`。
 
 权限模式支持：

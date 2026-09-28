@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { checkTaskBudget, DEFAULT_TASK_TEXT_BUDGET } from "./context-budget.ts";
 import { containsLikelySecret, createOutboundExchange, exchangeFingerprint, MAX_WEB_ROUNDS, validateSourcePath, type OutboundKind } from "./exchange-protocol.ts";
-import { OrcaClient, resolveOrcaCommand, type OrcaExec } from "./orca-client.ts";
+import { EdgeClient, type ExecLike } from "./edge-client.ts";
 import { ActiveTaskError, PlannerTaskStore, type PlannerTaskState } from "./state-store.ts";
 import { PlannerWorker } from "./worker.ts";
 
@@ -29,9 +29,9 @@ function storeFor(cwd: string): PlannerTaskStore {
   return new PlannerTaskStore(cwd, getAgentDir());
 }
 
-function createOrcaClient(pi: ExtensionAPI, cwd: string): OrcaClient {
-  const exec: OrcaExec = (command, args, options) => pi.exec(command, args, options);
-  return new OrcaClient(exec, resolveOrcaCommand(), cwd);
+function createEdgeClient(pi: ExtensionAPI): EdgeClient {
+  const exec: ExecLike = (command, args, options) => pi.exec(command, args, options);
+  return new EdgeClient({ exec });
 }
 
 async function validateSourceFiles(projectRoot: string, values: string[]): Promise<string[]> {
@@ -112,14 +112,13 @@ function sameConversationUrl(saved: string | undefined, current: string): boolea
   }
 }
 
-async function rebindActivePage(pi: ExtensionAPI, ctx: ExtensionContext, store: PlannerTaskStore, state: PlannerTaskState): Promise<void> {
+async function rebindActivePage(client: EdgeClient, store: PlannerTaskStore, state: PlannerTaskState): Promise<void> {
   if (!state.browserPageId) throw new Error("任务没有已绑定的网页标签页；不会新建线程");
-  const page = await createOrcaClient(pi, ctx.cwd).findTabById(state.browserPageId);
+  const page = await client.findTabById(state.browserPageId);
   if (!page) throw new Error("已保存的 ChatGPT 标签页已不存在；不会自动另开线程，以免串话");
   if (!sameConversationUrl(state.chatUrl, page.url)) throw new Error("已保存的标签页不再指向原会话；不会重发消息");
-  if (state.chatUrl !== page.url || state.browserProfileId !== page.profileId) {
+  if (state.chatUrl !== page.url) {
     state.chatUrl = page.url;
-    state.browserProfileId = page.profileId ?? state.browserProfileId;
     await store.writeTask(state);
   }
 }
@@ -127,12 +126,15 @@ async function rebindActivePage(pi: ExtensionAPI, ctx: ExtensionContext, store: 
 export default function webGptPlannerExtension(pi: ExtensionAPI): void {
   let activeContext: ExtensionContext | undefined;
   let worker: PlannerWorker | undefined;
+  let edgeClient: EdgeClient | undefined;
+
+  const edgeFor = (): EdgeClient => (edgeClient ??= createEdgeClient(pi));
 
   const getWorker = (): PlannerWorker => {
     worker ??= new PlannerWorker({
       pi,
       storeFor,
-      orcaFor: (cwd) => createOrcaClient(pi, cwd),
+      edgeFor: () => edgeFor(),
       getContext: () => activeContext,
     });
     return worker;
@@ -147,7 +149,7 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
     if (!state || state.status !== "waiting" || !state.pending) return;
     try {
       await store.claimActiveForResume(active.taskId, pi.getSessionName());
-      await rebindActivePage(pi, ctx, store, state);
+      await rebindActivePage(edgeFor(), store, state);
       getWorker().start();
     } catch (error) {
       state.status = "paused";
@@ -160,6 +162,8 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", () => {
     worker?.stop();
     worker = undefined;
+    edgeClient?.dispose();
+    edgeClient = undefined;
     activeContext = undefined;
   });
 
@@ -180,20 +184,19 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
           taskText,
         });
         try {
-          const orca = createOrcaClient(pi, ctx.cwd);
-          const ensured = await orca.ensureChatPage();
+          const edge = edgeFor();
+          const ensured = await edge.ensureChatPage();
           const page = ensured.page;
-          task.browserPageId = page.browserPageId;
-          task.browserProfileId = page.profileId;
-          task.worktreeId = ensured.worktree.id;
+          task.browserPageId = page.targetId;
+          task.createdTab = ensured.created;
           task.chatUrl = page.url;
           task.status = "preflight";
           await store.writeTask(task);
-          const freshChatUrl = await orca.startFreshChat(page.browserPageId);
+          const freshChatUrl = await edge.startFreshChat(page.targetId);
           task.chatUrl = freshChatUrl || page.url;
           await store.writeTask(task);
-          const selection = await orca.preflight(page.browserPageId);
-          task.browserPageId = page.browserPageId;
+          const selection = await edge.preflight(page.targetId);
+          task.browserPageId = page.targetId;
           task.chatUrl = freshChatUrl || page.url;
           task.selectedModel = selection.model;
           task.thinkingLevel = selection.thinkingLevel;
@@ -205,7 +208,7 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
             deliverAs: "followUp",
             expandPromptTemplates: true,
           });
-          ctx.ui.notify(`已创建文本优先任务 ${task.taskId}；已绑定当前唯一 ChatGPT 标签页。`, "info");
+          ctx.ui.notify(`已创建文本优先任务 ${task.taskId}；已绑定 Edge 专用实例的 ChatGPT 标签页（${edge.endpoint}）。`, "info");
         } catch (error) {
           task.status = "paused";
           task.pauseReason = `启动预检失败：${errorText(error)}`;
@@ -255,15 +258,14 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
       }
       if (state.status === "paused" && !state.pending && state.roundsUsed === 0 && state.browserPageId) {
         try {
-          const orca = createOrcaClient(pi, ctx.cwd);
-          const ensured = await orca.ensureChatPage({ browserPageId: state.browserPageId });
+          const edge = edgeFor();
+          const ensured = await edge.ensureChatPage({ browserPageId: state.browserPageId });
           const page = ensured.page;
           if (state.chatUrl && !sameConversationUrl(state.chatUrl, page.url)) throw new Error("目标 ChatGPT 页面已改变");
-          const freshChatUrl = await orca.startFreshChat(page.browserPageId);
-          const selection = await orca.preflight(page.browserPageId);
-          state.browserPageId = page.browserPageId;
-          state.browserProfileId = page.profileId ?? state.browserProfileId;
-          state.worktreeId = ensured.worktree.id;
+          const freshChatUrl = await edge.startFreshChat(page.targetId);
+          const selection = await edge.preflight(page.targetId);
+          state.browserPageId = page.targetId;
+          state.createdTab = state.createdTab ?? ensured.created;
           state.chatUrl = freshChatUrl || page.url;
           state.selectedModel = selection.model;
           state.thinkingLevel = selection.thinkingLevel;
@@ -288,9 +290,9 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
       }
       if (state.pending?.submissionState === "unknown") {
         try {
-          await rebindActivePage(pi, ctx, store, state);
-          const messages = await createOrcaClient(pi, ctx.cwd).getActiveMessages(state.browserPageId!);
-          const accepted = messages.some((message) => message.role === "user" && message.text.includes(state.pending!.exchangeId));
+          await rebindActivePage(edgeFor(), store, state);
+          const turns = await edgeFor().getActiveTurns(state.browserPageId!);
+          const accepted = turns.some((turn) => turn.text.includes(state.pending!.exchangeId));
           if (!accepted) {
             ctx.ui.notify("无法证明原交互是否已提交；保持暂停，不会重发。请核对同一聊天后再决定。", "warning");
             return;
@@ -306,7 +308,7 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
       }
       if (state.status === "waiting" && state.pending) {
         try {
-          await rebindActivePage(pi, ctx, store, state);
+          await rebindActivePage(edgeFor(), store, state);
           activeContext = ctx;
           getWorker().start();
           ctx.ui.notify(`已恢复等待原交互 ${state.pending.exchangeId}；不会重新提交。`, "info");
@@ -357,13 +359,15 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
       worker?.stop();
       await store.releaseActive(state.taskId);
       let closeNote = "";
-      if (state.browserPageId) {
+      if (state.browserPageId && state.createdTab !== false) {
         try {
-          await createOrcaClient(pi, ctx.cwd).closePage(state.browserPageId);
-          closeNote = "\n已关闭该任务的 ChatGPT 标签页。";
+          await edgeFor().closePage(state.browserPageId);
+          closeNote = "\n已关闭该任务创建的 ChatGPT 标签页。";
         } catch (error) {
           closeNote = `\n标签页关闭失败：${errorText(error)}`;
         }
+      } else if (state.browserPageId) {
+        closeNote = "\n该标签页是复用你原有的，未关闭。";
       }
       ctx.ui.notify(`已停止后续网页派发；不会撤回已发送消息或回滚本地文件。${closeNote}`, "warning");
     },
@@ -429,7 +433,7 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
       }
       try {
         await confirmNewContextFiles(ctx, state, sourceFiles, params.text, budget.estimatedTokens);
-        const selection = await createOrcaClient(pi, ctx.cwd).preflight(state.browserPageId, signal);
+        const selection = await edgeFor().preflight(state.browserPageId, signal);
         state.selectedModel = selection.model;
         state.thinkingLevel = selection.thinkingLevel;
         state.composerMode = selection.mode;
@@ -459,7 +463,7 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
       await store.writeTask(state);
       await store.writeExchange(state.taskId, exchangeId, { request, fingerprint, submissionState: "intent" });
       try {
-        const submittedUrl = await createOrcaClient(pi, ctx.cwd).fillAndSend(state.browserPageId, wrappedText, state.chatUrl, signal);
+        const submittedUrl = await edgeFor().fillAndSend(state.browserPageId, wrappedText, state.chatUrl, signal);
         state.chatUrl = submittedUrl || state.chatUrl;
         state.pending.submissionState = "accepted";
         await store.writeTask(state);
