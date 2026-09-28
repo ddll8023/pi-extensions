@@ -321,7 +321,8 @@ export class EdgeClient {
     const ready = await this.readVersion(signal);
     if (ready) return ready;
     if (this.exec && existsSync(this.launcherPath)) {
-      await this.exec("cmd", ["/c", "start", "", "/min", this.launcherPath], { timeout: 30_000 });
+      // /b：不新建控制台窗口（对 .bat 用 /min 会留下一个跑完不关的黑窗口）；诊断改看 PiAgent-Edge.log。
+      await this.exec("cmd", ["/c", "start", "", "/b", this.launcherPath], { timeout: 30_000 });
       const deadline = this.now() + LAUNCH_WAIT_MS;
       while (this.now() < deadline) {
         await this.sleep(1_000, signal);

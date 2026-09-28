@@ -185,7 +185,7 @@ test("端点未就绪时按需启动脚本并等待就绪", async () => {
   const { client, launched } = makeHarness({ versionOk: false, readyAfterLaunch: true, launcher: true });
   const version = await client.ensureEndpoint();
   assert.equal(version.browser, "Edg/154.0.4258.37");
-  assert.deepEqual(launched[0], ["cmd", "/c", "start", "", "/min", process.execPath]);
+  assert.deepEqual(launched[0], ["cmd", "/c", "start", "", "/b", process.execPath]);
 });
 
 test("listPages 只保留 page 类型", async () => {
