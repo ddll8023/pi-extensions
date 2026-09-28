@@ -114,7 +114,10 @@ export const PAGE_STATE_SCRIPT = `(() => {
   const buttons = form ? [...form.querySelectorAll("button")] : [];
   const aria = (el) => el.getAttribute("aria-label") || "";
   const trigger = document.querySelector("[data-codex-intelligence-trigger]")
-    || document.querySelector("button[aria-label*='模型'], button[aria-label*='model']");
+    || document.querySelector("button[aria-label*='模型'], button[aria-label*='model']")
+    || (form ? form.querySelector("button[aria-haspopup='menu']") : null)
+    || document.querySelector("button[aria-haspopup='menu']");
+  const triggerText = trigger ? (trigger.innerText || "").replace(/\\s+/g, " ").trim() : "";
   return {
     href: location.href,
     pathname: location.pathname,
@@ -122,7 +125,9 @@ export const PAGE_STATE_SCRIPT = `(() => {
     composerFound: !!composer,
     composerLength: composer ? (composer.innerText || "").length : 0,
     triggerFound: !!trigger,
-    triggerText: trigger ? (trigger.innerText || "").replace(/\\s+/g, " ").trim() : "",
+    triggerText: triggerText || (trigger ? aria(trigger).replace(/\\s+/g, " ").trim() : ""),
+    triggerLabel: trigger ? aria(trigger) : "",
+    triggerSelector: trigger && trigger.hasAttribute("data-codex-intelligence-trigger") ? "intelligence" : (trigger ? "fallback" : "none"),
     hasSend: buttons.some((b) => /^(发送|Send)/i.test(aria(b))),
     hasStop: buttons.some((b) => /^(停止|Stop)/i.test(aria(b))),
   };
@@ -255,10 +260,22 @@ export class EdgeClient {
     return attached.sessionId;
   }
 
+  /** 读取 JSON 接口；任何连接层失败都转换成带启动脚本提示的错误。 */
+  private async requestJson(url: string, signal: AbortSignal | undefined, action: string): Promise<unknown> {
+    try {
+      const response = await this.fetchImpl(url, { signal });
+      if (!response.ok) throw new EdgeClientError(`${action}失败（HTTP ${response.status}）；端点 ${this.endpoint} 可能不是可用的 CDP 接口`);
+      return await response.json();
+    } catch (error) {
+      if (error instanceof EdgeClientError) throw error;
+      if (signal?.aborted) throw new EdgeClientError(`${action}已取消`);
+      throw new EdgeClientError(`无法连接 Edge 调试端点 ${this.endpoint}（${action}）；请先运行 ${this.launcherPath} 后重试`);
+    }
+  }
+
   async listPages(signal?: AbortSignal): Promise<EdgePage[]> {
-    const response = await this.fetchImpl(`${this.endpoint}/json/list`, { signal });
-    if (!response.ok) throw new EdgeClientError(`读取标签页列表失败（HTTP ${response.status}）`);
-    const parsed = await response.json() as Array<{ id?: string; type?: string; url?: string }>;
+    const parsed = await this.requestJson(`${this.endpoint}/json/list`, signal, "读取标签页列表");
+    if (!Array.isArray(parsed)) throw new EdgeClientError("读取标签页列表失败：端点返回的不是标签页数组");
     return parsed
       .filter((target) => target.type === "page" && typeof target.id === "string" && typeof target.url === "string")
       .map((target) => ({ targetId: target.id as string, url: target.url as string }));
@@ -277,6 +294,7 @@ export class EdgeClient {
 
   /** 复用已保存的标签页；没有就新建一个（只认 ChatGPT 页面）。 */
   async ensureChatPage(input: { browserPageId?: string; signal?: AbortSignal } = {}): Promise<{ page: EdgePage; created: boolean }> {
+    await this.ensureEndpoint(input.signal);
     const pages = await this.listPages(input.signal);
     if (input.browserPageId) {
       const saved = pages.find((page) => page.targetId === input.browserPageId);
@@ -307,15 +325,30 @@ export class EdgeClient {
     return typeof value === "object" && value !== null ? value as PageState : undefined;
   }
 
+  /** 等页面渲染出输入框与思考强度控件（新建标签页后需要时间）；超时返回最后一次状态，由调用方判断。 */
+  async waitReady(targetId: string, signal?: AbortSignal): Promise<PageState | undefined> {
+    const deadline = this.now() + READY_TIMEOUT_MS;
+    let state = await this.readState(targetId, signal);
+    while (this.now() < deadline && !(state?.composerFound && state.triggerFound)) {
+      await this.sleep(500, signal);
+      state = await this.readState(targetId, signal);
+    }
+    return state;
+  }
+
   /** 只读预检：聊天模式 + 最新 + 极高；任一项不符即抛错（不自动点选）。 */
   async preflight(targetId: string, signal?: AbortSignal): Promise<EdgeSelection> {
-    const state = await this.readState(targetId, signal);
+    const state = await this.waitReady(targetId, signal);
     if (!state) throw new EdgeClientError("无法读取 ChatGPT 页面状态");
     if (!isNormalChatUrl(state.href)) throw new EdgeClientError("当前不是普通聊天页面（可能位于 GPT、项目或临时聊天）；请切换到普通聊天后重试");
-    if (!state.composerFound) throw new EdgeClientError("当前页面没有可用的输入框；请在该标签页登录 ChatGPT 后重试");
-    const thinkingLevel = parseThinkingLevel(state.triggerText);
+    if (!state.composerFound) throw new EdgeClientError(`当前页面没有可用的输入框（URL：${state.href}）；请在该标签页登录 ChatGPT 后重试`);
+    if (!state.triggerFound) {
+      throw new EdgeClientError(`未找到思考强度控件（URL：${state.href}，输入框：有）；请确认该标签页是已登录的普通 ChatGPT 聊天页后重试`);
+    }
+    const reading = state.triggerText;
+    const thinkingLevel = parseThinkingLevel(reading);
     if (!EXPECTED_THINKING_LEVELS.includes(thinkingLevel)) {
-      throw new EdgeClientError(`网页思考强度不是「极高」（当前：${thinkingLevel || "未知"}）；请在网页里手动设置后重试`);
+      throw new EdgeClientError(`网页思考强度不是「极高」（当前：${thinkingLevel || `未识别，控件文本为「${reading || "空"}」`}）；请在网页里手动设置后重试`);
     }
     const model = await this.readCheckedModel(targetId, signal);
     if (!EXPECTED_MODELS.includes(model)) {
@@ -340,7 +373,7 @@ export class EdgeClient {
 
   /** 打开模型菜单读出被勾选的模型，然后按 Esc 关闭（不改变选择）。 */
   async readCheckedModel(targetId: string, signal?: AbortSignal): Promise<string> {
-    const opened = await this.evaluate(targetId, `(() => { const t = document.querySelector("[data-codex-intelligence-trigger]") || document.querySelector("button[aria-label*='模型'], button[aria-label*='model']"); if (!t) return false; t.click(); return true; })()`, signal);
+    const opened = await this.evaluate(targetId, `(() => { const t = document.querySelector("[data-codex-intelligence-trigger]") || document.querySelector("button[aria-label*='模型'], button[aria-label*='model']") || document.querySelector("button[aria-haspopup='menu']"); if (!t) return false; t.click(); return true; })()`, signal);
     if (opened !== true) throw new EdgeClientError("未找到模型选择控件，无法读回当前模型");
     try {
       const deadline = this.now() + 8_000;
@@ -359,7 +392,7 @@ export class EdgeClient {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const stillOpen = await this.evaluate(targetId, `(() => document.querySelectorAll('[role="menu"]').length > 0)()`);
       if (stillOpen !== true) return;
-      await this.evaluate(targetId, `(() => { const t = document.querySelector("[data-codex-intelligence-trigger]"); if (t) t.click(); return true; })()`);
+      await this.evaluate(targetId, `(() => { const t = document.querySelector("[data-codex-intelligence-trigger]") || document.querySelector("button[aria-label*='模型'], button[aria-label*='model']") || document.querySelector("button[aria-haspopup='menu']"); if (t) { t.click(); return true; } document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return true; })()`);
       await this.sleep(200);
     }
   }
@@ -383,7 +416,7 @@ export class EdgeClient {
       throw new EdgeClientError("提交前页面已切换到其他会话；已放弃发送");
     }
     if (state.composerLength > 0) throw new EdgeClientError("ChatGPT 输入框里已有内容，不会覆盖；请清空后重试");
-    if (!state.hasSend) throw new EdgeClientError("未找到发送按钮；请确认页面已加载且思考强度设置为「极高」");
+    if (!state.composerFound) throw new EdgeClientError("当前页面没有可用的输入框；已放弃发送");
 
     const browser = await this.browser();
     const sessionId = await this.sessionFor(targetId);
@@ -397,7 +430,7 @@ export class EdgeClient {
     if (inserted <= 0) throw new EdgeClientError("文本未能写入 ChatGPT 输入框；已放弃发送");
 
     const clicked = await this.evaluate(targetId, `(() => { const form = document.querySelector("form"); if (!form) return false; const button = [...form.querySelectorAll("button")].find((b) => /^(发送|Send)/i.test(b.getAttribute("aria-label") || "")); if (!button) return false; button.click(); return true; })()`, signal);
-    if (clicked !== true) throw new EdgeClientError("未能点击发送按钮；已放弃发送");
+    if (clicked !== true) throw new EdgeClientError(`未能点击发送按钮（已写入 ${inserted} 字符）；已放弃发送，请核对网页状态后重试`);
 
     const deadline = this.now() + 15_000;
     while (this.now() < deadline) {
@@ -415,16 +448,29 @@ export class EdgeClient {
     return typeof value === "number" ? value : -1;
   }
 
-  /** 关闭标签页（仅用于我们自己创建的那个）。 */
+  /** 关闭标签页（仅用于我们自己创建的那个）；目标已经不存在时视为已关闭。 */
   async closePage(targetId: string, signal?: AbortSignal): Promise<void> {
     const browser = await this.browser();
+    let failure = "";
     try {
       await browser.send("Target.closeTarget", { targetId });
+      this.sessions.delete(targetId);
+      return;
     } catch (error) {
-      const response = await this.fetchImpl(`${this.endpoint}/json/close/${targetId}`, { signal });
-      if (!response.ok) throw new EdgeClientError(`关闭标签页失败：${error instanceof Error ? error.message : String(error)}`);
+      failure = error instanceof Error ? error.message : String(error);
     }
-    this.sessions.delete(targetId);
+    if (/no target|not found|no session/i.test(failure)) {
+      this.sessions.delete(targetId);
+      return;
+    }
+    try {
+      const response = await this.fetchImpl(`${this.endpoint}/json/close/${targetId}`, { signal });
+      if (response.ok) {
+        this.sessions.delete(targetId);
+        return;
+      }
+    } catch { /* 连接层失败：落到下面的报错 */ }
+    throw new EdgeClientError(`关闭标签页失败：${failure}`);
   }
 
   dispose(): void {
@@ -442,6 +488,8 @@ export interface PageState {
   composerLength: number;
   triggerFound: boolean;
   triggerText: string;
+  triggerLabel: string;
+  triggerSelector: string;
   hasSend: boolean;
   hasStop: boolean;
 }

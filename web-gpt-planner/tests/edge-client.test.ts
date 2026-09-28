@@ -33,7 +33,9 @@ interface HarnessOptions {
   state?: Record<string, unknown>;
   menu?: unknown;
   closeTargetFails?: boolean;
+  closeTargetError?: string;
   closeHttpFails?: boolean;
+  listThrows?: boolean;
   launcher?: boolean;
   onEvaluate?: (expression: string, state: Record<string, unknown>) => unknown;
 }
@@ -42,6 +44,7 @@ interface Harness {
   client: EdgeClient;
   connection: FakeConnection;
   launched: string[][];
+  fetched: string[];
   state: Record<string, unknown>;
 }
 
@@ -65,7 +68,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     if (method === "Target.attachToTarget") return { sessionId: "session-1" };
     if (method === "Target.createTarget") return { targetId: "created-1" };
     if (method === "Target.closeTarget") {
-      if (options.closeTargetFails) throw new Error("not attached to target");
+      if (options.closeTargetFails) throw new Error(options.closeTargetError ?? "not attached to target");
       return {};
     }
     if (method === "Input.insertText") {
@@ -84,8 +87,10 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     return {};
   });
 
+  const fetched: string[] = [];
   const fetchImpl = (async (input: RequestInfo | URL) => {
     const url = String(input);
+    fetched.push(url);
     const respond = (body: unknown, ok: boolean, status = ok ? 200 : 500) => ({
       ok,
       status,
@@ -97,7 +102,10 @@ function makeHarness(options: HarnessOptions = {}): Harness {
         ? respond({ Browser: "Edg/154.0.4258.37", webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/fake" }, true)
         : respond({}, false, 404);
     }
-    if (url.endsWith("/json/list")) return respond(options.pages ?? [{ id: "saved", type: "page", url: CHAT_URL }], true);
+    if (url.endsWith("/json/list")) {
+      if (options.listThrows) throw new TypeError("fetch failed");
+      return respond(options.pages ?? [{ id: "saved", type: "page", url: CHAT_URL }], true);
+    }
     if (url.includes("/json/close/")) return options.closeHttpFails ? respond({}, false, 500) : respond("Target is closing", true);
     return respond({}, false, 404);
   }) as unknown as typeof fetch;
@@ -119,7 +127,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     now: () => clock.value,
   });
 
-  return { client, connection, launched, state };
+  return { client, connection, launched, fetched, state };
 }
 
 test("parseThinkingLevel 支持中文与英文标签", () => {
@@ -257,6 +265,66 @@ test("getActiveTurns 与 isGenerating 读取页面状态", async () => {
   });
   assert.equal(await client.isGenerating("saved"), true);
   assert.deepEqual(await client.getActiveTurns("saved"), [{ text: "a" }, { text: "b" }]);
+});
+
+test("closePage 在目标已不存在时视为已关闭", async () => {
+  const { client, fetched } = makeHarness({ closeTargetFails: true, closeTargetError: "No target with given id found" });
+  await client.closePage("gone");
+  assert.equal(fetched.some((url) => url.includes("/json/close/")), false);
+});
+
+test("listPages 在端点不可达时给出带启动脚本的报错", async () => {
+  const { client } = makeHarness({ listThrows: true });
+  await assert.rejects(() => client.listPages(), (error: unknown) => {
+    assert.ok(error instanceof EdgeClientError);
+    assert.match((error as Error).message, /无法连接 Edge 调试端点 http:\/\/127\.0\.0\.1:9222/);
+    assert.match((error as Error).message, /PiAgent-Edge\.bat/);
+    return true;
+  });
+});
+
+test("ensureChatPage 在端点不可用时不再抛裸的 fetch 错误", async () => {
+  const { client } = makeHarness({ versionOk: false, launcher: false });
+  await assert.rejects(() => client.ensureChatPage(), /未检测到 Edge 调试端点/);
+});
+
+test("preflight 等到页面渲染出思考强度控件再判断", async () => {
+  let reads = 0;
+  const { client } = makeHarness({
+    state: { triggerFound: false, triggerText: "" },
+    onEvaluate: (expression, state) => {
+      if (!expression.includes("composerFound")) return undefined;
+      reads += 1;
+      if (reads >= 3) {
+        state.triggerFound = true;
+        state.triggerText = "思考强度 极高";
+      }
+      return { result: { value: { ...state } } };
+    },
+  });
+  assert.deepEqual(await client.preflight("saved"), { model: "最新", thinkingLevel: "极高", mode: "chat" });
+  assert.ok(reads >= 3);
+});
+
+test("preflight 在思考强度控件始终缺失时报出控件缺失而不是未知", async () => {
+  const { client } = makeHarness({ state: { triggerFound: false, triggerText: "" } });
+  await assert.rejects(() => client.preflight("saved"), /未找到思考强度控件/);
+});
+
+test("fillAndSend 在发送按钮插入文本后才出现时仍能发送", async () => {
+  const { client } = makeHarness({
+    state: { hasSend: false },
+    onEvaluate: (expression, state) => {
+      if (!expression.includes("button.click()")) return undefined;
+      state.href = "https://chatgpt.com/c/abc";
+      state.pathname = "/c/abc";
+      state.composerLength = 0;
+      state.hasStop = true;
+      return { result: { value: true } };
+    },
+  });
+  const url = await client.fillAndSend("saved", "文本");
+  assert.equal(url, "https://chatgpt.com/c/abc");
 });
 
 test("closePage 在 CDP 关闭失败时回退到 HTTP 接口", async () => {

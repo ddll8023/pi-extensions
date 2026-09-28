@@ -187,17 +187,14 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
           const edge = edgeFor();
           const ensured = await edge.ensureChatPage();
           const page = ensured.page;
+          // 复用用户原有标签页时绝不导航，避免冲掉对方正在看的会话。
+          const chatUrl = ensured.created ? await edge.startFreshChat(page.targetId) : page.url;
           task.browserPageId = page.targetId;
           task.createdTab = ensured.created;
-          task.chatUrl = page.url;
+          task.chatUrl = chatUrl || page.url;
           task.status = "preflight";
           await store.writeTask(task);
-          const freshChatUrl = await edge.startFreshChat(page.targetId);
-          task.chatUrl = freshChatUrl || page.url;
-          await store.writeTask(task);
           const selection = await edge.preflight(page.targetId);
-          task.browserPageId = page.targetId;
-          task.chatUrl = freshChatUrl || page.url;
           task.selectedModel = selection.model;
           task.thinkingLevel = selection.thinkingLevel;
           task.composerMode = selection.mode;
@@ -262,7 +259,7 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
           const ensured = await edge.ensureChatPage({ browserPageId: state.browserPageId });
           const page = ensured.page;
           if (state.chatUrl && !sameConversationUrl(state.chatUrl, page.url)) throw new Error("目标 ChatGPT 页面已改变");
-          const freshChatUrl = await edge.startFreshChat(page.targetId);
+          const freshChatUrl = state.createdTab === true ? await edge.startFreshChat(page.targetId) : page.url;
           const selection = await edge.preflight(page.targetId);
           state.browserPageId = page.targetId;
           state.createdTab = state.createdTab ?? ensured.created;
