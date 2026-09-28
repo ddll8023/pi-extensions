@@ -45,7 +45,7 @@ description: >-
    }
    ```
 
-   `kind` may be `NEED_CONTEXT`, `PLAN`, or `REVIEW`; a `REVIEW` must also include a `decision` from `CONTINUE`, `REVISE`, `NEED_CONTEXT`, or `COMPLETE`. `CONTINUE` must include a new `next_phase_id` and a strictly higher `next_plan_version`; `REVISE` must include a strictly higher `next_plan_version`. Accept only responses with matching task, exchange, phase, plan version, and protocol version. Invalid or ambiguous responses pause; never guess or resubmit.
+   `kind` may be `NEED_CONTEXT`, `PLAN`, or `REVIEW`; a `REVIEW` must also include a `decision` from `CONTINUE`, `REVISE`, `NEED_CONTEXT`, or `COMPLETE`. `CONTINUE` must include a new `next_phase_id` and a strictly higher `next_plan_version`; `REVISE` must include a strictly higher `next_plan_version`. Accept only responses with matching task, exchange, phase, plan version, and protocol version. The reply is read from the thread text by matching the envelope's `exchange_id` (the last parseable JSON object carrying it, and only once it appears at least twice, since the first occurrence is our own request) — never by DOM turn order or role. Invalid or ambiguous responses pause; never guess or resubmit.
 5. Before local edits or tests, follow the repository's authorization requirements. A web plan is not user authorization. Reconfirm any scope expansion or new test command.
 6. After an approved phase, report actual changed files, commands and results, unrun checks, deviations, and blockers through a new `web_gpt_exchange` call.
 7. If a submit times out or its acceptance is uncertain, use `/sol-resume` to inspect the original page and exchange. Never blindly retry.

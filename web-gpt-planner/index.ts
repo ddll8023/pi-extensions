@@ -288,8 +288,8 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
       if (state.pending?.submissionState === "unknown") {
         try {
           await rebindActivePage(edgeFor(), store, state);
-          const turns = await edgeFor().getActiveTurns(state.browserPageId!);
-          const accepted = turns.some((turn) => turn.text.includes(state.pending!.exchangeId));
+          const reply = await edgeFor().getReply(state.browserPageId!, state.pending!.exchangeId);
+          const accepted = reply.occurrences >= 1;
           if (!accepted) {
             ctx.ui.notify("无法证明原交互是否已提交；保持暂停，不会重发。请核对同一聊天后再决定。", "warning");
             return;

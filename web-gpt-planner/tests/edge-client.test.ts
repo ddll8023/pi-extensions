@@ -3,7 +3,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { EdgeClient, EdgeClientError, PAGE_STATE_SCRIPT, isNormalChatUrl, parseThinkingLevel, type CdpConnection, type ExecLike } from "../edge-client.ts";
+import { EdgeClient, EdgeClientError, PAGE_STATE_SCRIPT, isNormalChatUrl, parseThinkingLevel, threadReplyScript, type CdpConnection, type ExecLike } from "../edge-client.ts";
 
 const CHAT_URL = "https://chatgpt.com/";
 
@@ -278,13 +278,39 @@ test("fillAndSend 在文本未写入时放弃", async () => {
   await assert.rejects(() => client.fillAndSend("saved", "abc"), /未能写入 ChatGPT 输入框/);
 });
 
-test("getActiveTurns 与 isGenerating 读取页面状态", async () => {
+test("getReply 与 isGenerating 读取页面状态", async () => {
   const { client } = makeHarness({
     state: { hasStop: true },
-    onEvaluate: (expression) => (expression.includes("thread-scroll-container") ? { result: { value: { containerFound: true, turns: [{ text: "a" }, { text: "b" }] } } } : undefined),
+    onEvaluate: (expression) =>
+      expression.includes("thread-scroll-container")
+        ? { result: { value: { containerFound: true, textLength: 900, occurrences: 2, lastRaw: '{"exchange_id":"x"}' } } }
+        : undefined,
   });
   assert.equal(await client.isGenerating("saved"), true);
-  assert.deepEqual(await client.getActiveTurns("saved"), [{ text: "a" }, { text: "b" }]);
+  const reply = await client.getReply("saved", "x");
+  assert.equal(reply.occurrences, 2);
+  assert.equal(reply.lastRaw, '{"exchange_id":"x"}');
+});
+
+test("getReply 在只有自己的请求时返回 lastRaw 为空", async () => {
+  const { client } = makeHarness({
+    onEvaluate: (expression) =>
+      expression.includes("thread-scroll-container")
+        ? { result: { value: { containerFound: true, textLength: 300, occurrences: 1, lastRaw: "" } } }
+        : undefined,
+  });
+  const reply = await client.getReply("saved", "x");
+  assert.equal(reply.occurrences, 1);
+  assert.equal(reply.lastRaw, "");
+});
+
+test("回复提取脚本按括号配平与 exchange_id 匹配，不依赖回合结构", () => {
+  const script = threadReplyScript("abc-123");
+  assert.match(script, /thread-scroll-container/);
+  assert.match(script, /JSON\.parse/);
+  assert.match(script, /parsed\.exchange_id === wanted/);
+  assert.equal(script.includes("data-message-author-role"), false);
+  assert.equal(script.includes("div.relative.flex.flex-1"), false);
 });
 
 test("closePage 在目标已不存在时视为已关闭", async () => {

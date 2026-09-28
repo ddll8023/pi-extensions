@@ -79,14 +79,11 @@ export class PlannerWorker {
     const pending = state.pending;
     if (!pending) return;
     if (await edge.isGenerating(state.browserPageId!)) return;
-    // 回合元素本身没有属性，因此用「包含本次 exchangeId 的回合」定位用户消息，紧随其后的最后一个回合即回复。
-    const turns = await edge.getActiveTurns(state.browserPageId!);
-    const userIndex = turns.findLastIndex((turn) => turn.text.includes(pending.exchangeId));
-    if (userIndex < 0 || userIndex !== turns.length - 2) return;
-    const reply = turns.at(-1);
-    if (!reply) return;
+    // 回复按协议信封从线程文本中提取：exchange_id 匹配的最后一个 JSON 对象即回复（前面那个是我们发出的请求）。
+    const reply = await edge.getReply(state.browserPageId!, pending.exchangeId);
+    if (reply.occurrences < 2 || !reply.lastRaw) return;
 
-    const fingerprint = exchangeFingerprint(reply.text);
+    const fingerprint = exchangeFingerprint(reply.lastRaw);
     const previous = this.stableResponses.get(pending.exchangeId);
     if (!previous || previous.fingerprint !== fingerprint) {
       this.stableResponses.set(pending.exchangeId, { fingerprint, observations: 1 });
@@ -103,7 +100,7 @@ export class PlannerWorker {
     };
     let result;
     try {
-      result = parseInboundExchange(reply.text, identity);
+      result = parseInboundExchange(reply.lastRaw, identity);
     } catch (error) {
       if (this.stopped) return;
       const current = await store.readTask(state.taskId);

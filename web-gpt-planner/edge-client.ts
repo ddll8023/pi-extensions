@@ -31,8 +31,11 @@ export interface EdgePage {
   url: string;
 }
 
-export interface EdgeTurn {
-  text: string;
+export interface ThreadReply {
+  containerFound: boolean;
+  textLength: number;
+  occurrences: number;
+  lastRaw: string;
 }
 
 export interface EdgeSelection {
@@ -164,19 +167,54 @@ export const MENU_MODELS_SCRIPT = `(() => {
   };
 })()`;
 
-/** 页面侧脚本：对话回合文本（回合元素本身没有任何属性，因此按顺序返回）。 */
-export const PAGE_TURNS_SCRIPT = `(() => {
+/**
+ * 页面侧脚本：从线程文本里按协议信封提取回复。
+ * 回合元素不带任何属性（data-message-id / role / article 均为 0），因此不依赖角色、顺序或深链选择器：
+ * 扫描括号配平且能 JSON.parse 的对象，取 exchange_id 匹配的最后一个（第一个必定是我们自己发出的请求）。
+ */
+export function threadReplyScript(exchangeId: string): string {
+  return `(() => {
   const container = document.querySelector('[class*="thread-scroll-container"]');
-  if (!container) return { containerFound: false, turns: [] };
-  const list = container.querySelector("div.relative.flex.flex-1 > div.flex.min-h-full.flex-1 > div.relative.shrink-0 > div.flex.flex-col")
-    || container.querySelector("div.flex.flex-col");
-  if (!list) return { containerFound: true, turns: [] };
-  const turns = [...list.children]
-    .map((el) => (el.innerText || "").trim())
-    .filter((text) => text.length > 0)
-    .map((text) => ({ text: text.slice(0, 200000) }));
-  return { containerFound: true, turns };
+  const text = container ? (container.innerText || "") : "";
+  const wanted = ${JSON.stringify(exchangeId)};
+  const found = [];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let j = i; j < text.length; j += 1) {
+      const char = text[j];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === String.fromCharCode(92)) escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') { inString = true; continue; }
+      if (char === "{") depth += 1;
+      else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const raw = text.slice(i, j + 1);
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object" && parsed.exchange_id === wanted) found.push(raw);
+          } catch { /* 不是完整 JSON 对象，跳过 */ }
+          i = j;
+          break;
+        }
+      }
+    }
+  }
+  return {
+    containerFound: !!container,
+    textLength: text.length,
+    occurrences: found.length,
+    lastRaw: found.length > 0 ? found[found.length - 1].slice(0, 200000) : "",
+  };
 })()`;
+}
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -483,9 +521,14 @@ export class EdgeClient {
     return state?.hasStop === true;
   }
 
-  async getActiveTurns(targetId: string, signal?: AbortSignal): Promise<EdgeTurn[]> {
-    const value = await this.evaluate(targetId, PAGE_TURNS_SCRIPT, signal) as { turns?: EdgeTurn[] } | undefined;
-    return Array.isArray(value?.turns) ? value.turns : [];
+  async getReply(targetId: string, exchangeId: string, signal?: AbortSignal): Promise<ThreadReply> {
+    const value = await this.evaluate(targetId, threadReplyScript(exchangeId), signal) as Partial<ThreadReply> | undefined;
+    return {
+      containerFound: value?.containerFound === true,
+      textLength: typeof value?.textLength === "number" ? value.textLength : 0,
+      occurrences: typeof value?.occurrences === "number" ? value.occurrences : 0,
+      lastRaw: typeof value?.lastRaw === "string" ? value.lastRaw : "",
+    };
   }
 
   /** 写入一段文本并发送；任何一步无法确认即抛错，绝不盲目重发。 */
