@@ -3,7 +3,7 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { EdgeClient, EdgeClientError, PAGE_STATE_SCRIPT, isNormalChatUrl, parseThinkingLevel, threadReplyScript, type CdpConnection, type ExecLike } from "../edge-client.ts";
+import { EdgeClient, EdgeClientError, PAGE_STATE_SCRIPT, isNormalChatUrl, isPersistedChatUrl, parseThinkingLevel, threadReplyScript, threadTaskScript, type CdpConnection, type ExecLike } from "../edge-client.ts";
 
 const CHAT_URL = "https://chatgpt.com/";
 
@@ -106,6 +106,8 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       if (expression.includes(`role="menu"]').length > 0`)) {
         return { result: { value: menuVisible() && options.menuStaysOpen === true } };
       }
+      // composerLength() 助手使用的表达式单独回放输入框长度，否则写入校验永远拿不到数字。
+      if (expression.includes("c.innerText")) return { result: { value: state.composerLength } };
       return { result: { value: true } };
     }
     return {};
@@ -332,6 +334,28 @@ test("回复提取脚本按括号配平与 exchange_id 匹配，不依赖回合�
   assert.match(script, /parsed\.exchange_id === wanted/);
   assert.equal(script.includes("data-message-author-role"), false);
   assert.equal(script.includes("div.relative.flex.flex-1"), false);
+  assert.match(threadTaskScript("task-1"), /parsed\.task_id === wanted/);
+});
+
+test("isPersistedChatUrl 只认已持久化的会话地址", () => {
+  assert.equal(isPersistedChatUrl("https://chatgpt.com/c/6aba965e-7d04-83ea-9dfd-ce571652eb2c"), true);
+  assert.equal(isPersistedChatUrl("https://chatgpt.com/"), false);
+  assert.equal(isPersistedChatUrl("https://chatgpt.com/c/local-chatgpt%3A489e1e97-94a3-4f0f-995e-55c29d564117"), false);
+  assert.equal(isPersistedChatUrl("https://example.com/c/abc"), false);
+});
+
+test("中间形态的会话地址不做路径比对", async () => {
+  const { client, connection } = makeHarness({
+    state: { pathname: "/c/local-chatgpt%3A489e1e97", href: "https://chatgpt.com/c/local-chatgpt%3A489e1e97" },
+    onEvaluate: (expression, state) => {
+      if (!expression.includes("button.click()")) return undefined;
+      state.composerLength = 0;
+      state.hasStop = true;
+      return { result: { value: true } };
+    },
+  });
+  await client.fillAndSend("saved", "文本", "https://chatgpt.com/c/6aba965e-7d04-83ea-9dfd-ce571652eb2c");
+  assert.equal(connection.calls.some((call) => call.method === "Input.insertText"), true);
 });
 
 test("closePage 在目标已不存在时视为已关闭", async () => {

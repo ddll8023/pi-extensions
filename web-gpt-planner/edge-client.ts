@@ -181,15 +181,15 @@ export const MENU_MODELS_SCRIPT = `(() => {
 })()`;
 
 /**
- * 页面侧脚本：从线程文本里按协议信封提取回复。
+ * 页面侧脚本：在线程文本里扫描协议信封。
  * 回合元素不带任何属性（data-message-id / role / article 均为 0），因此不依赖角色、顺序或深链选择器：
- * 扫描括号配平且能 JSON.parse 的对象，取 exchange_id 匹配的最后一个（第一个必定是我们自己发出的请求）。
+ * 扫描括号配平且能 JSON.parse 的对象，收集指定字段匹配的那些。
  */
-export function threadReplyScript(exchangeId: string): string {
+function threadScanScript(field: "exchange_id" | "task_id", wanted: string): string {
   return `(() => {
   const container = document.querySelector('[class*="thread-scroll-container"]');
   const text = container ? (container.innerText || "") : "";
-  const wanted = ${JSON.stringify(exchangeId)};
+  const wanted = ${JSON.stringify(wanted)};
   const found = [];
   for (let i = 0; i < text.length; i += 1) {
     if (text[i] !== "{") continue;
@@ -212,7 +212,7 @@ export function threadReplyScript(exchangeId: string): string {
           const raw = text.slice(i, j + 1);
           try {
             const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed === "object" && parsed.exchange_id === wanted) found.push(raw);
+            if (parsed && typeof parsed === "object" && parsed.${field} === wanted) found.push(raw);
           } catch { /* 不是完整 JSON 对象，跳过 */ }
           i = j;
           break;
@@ -227,6 +227,16 @@ export function threadReplyScript(exchangeId: string): string {
     lastRaw: found.length > 0 ? found[found.length - 1].slice(0, 200000) : "",
   };
 })()`;
+}
+
+/** 回复提取：exchange_id 匹配的最后一个对象即回复（前面那个是我们发出的请求）。 */
+export function threadReplyScript(exchangeId: string): string {
+  return threadScanScript("exchange_id", exchangeId);
+}
+
+/** 会话身份证据：线程里出现本任务的信封，即可证明「这是本任务的会话」。 */
+export function threadTaskScript(taskId: string): string {
+  return threadScanScript("task_id", taskId);
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -249,6 +259,16 @@ export function isNormalChatUrl(url: string): boolean {
     if (parsed.origin !== CHATGPT_ORIGIN) return false;
     if (/temporary|temp-chat/i.test(parsed.search)) return false;
     return parsed.pathname === "/" || parsed.pathname.startsWith("/c/");
+  } catch {
+    return false;
+  }
+}
+
+/** 已持久化的会话地址（`/c/<会话>`）；`/` 与 `c/local-chatgpt:…` 都是提交前后会变化的中间形态。 */
+export function isPersistedChatUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.origin === CHATGPT_ORIGIN && parsed.pathname.startsWith("/c/") && !parsed.pathname.includes("local-chatgpt");
   } catch {
     return false;
   }
@@ -594,12 +614,24 @@ export class EdgeClient {
     };
   }
 
+  /** 线程里是否存在本任务的任意信封（用于在 URL 漂移后证明会话身份）。 */
+  async getTaskEvidence(targetId: string, taskId: string, signal?: AbortSignal): Promise<ThreadReply> {
+    const value = await this.evaluate(targetId, threadTaskScript(taskId), signal) as Partial<ThreadReply> | undefined;
+    return {
+      containerFound: value?.containerFound === true,
+      textLength: typeof value?.textLength === "number" ? value.textLength : 0,
+      occurrences: typeof value?.occurrences === "number" ? value.occurrences : 0,
+      lastRaw: typeof value?.lastRaw === "string" ? value.lastRaw : "",
+    };
+  }
+
   /** 写入一段文本并发送；任何一步无法确认即抛错，绝不盲目重发。 */
   async fillAndSend(targetId: string, text: string, expectedUrl?: string, signal?: AbortSignal): Promise<string> {
     const state = await this.readState(targetId, signal);
     if (!state) throw new EdgeClientError("无法读取 ChatGPT 页面状态");
     if (!isNormalChatUrl(state.href)) throw new EdgeClientError("提交前页面已不是普通聊天页面；已放弃发送");
-    if (expectedUrl && new URL(expectedUrl).pathname !== new URL(state.href).pathname) {
+    // 会话 URL 会漂移（/ → /c/local-chatgpt:… → /c/<uuid>），因此只在两边都是已持久化的会话地址时才做路径比对。
+    if (expectedUrl && isPersistedChatUrl(expectedUrl) && isPersistedChatUrl(state.href) && new URL(expectedUrl).pathname !== new URL(state.href).pathname) {
       throw new EdgeClientError("提交前页面已切换到其他会话；已放弃发送");
     }
     // 空输入框里有一个占位段落，innerText 可能是换行符，所以按去空白后的长度判断。

@@ -116,11 +116,23 @@ async function rebindActivePage(client: EdgeClient, store: PlannerTaskStore, sta
   if (!state.browserPageId) throw new Error("任务没有已绑定的网页标签页；不会新建线程");
   const page = await client.findTabById(state.browserPageId);
   if (!page) throw new Error("已保存的 ChatGPT 标签页已不存在；不会自动另开线程，以免串话");
-  if (!sameConversationUrl(state.chatUrl, page.url)) throw new Error("已保存的标签页不再指向原会话；不会重发消息");
+  if (!sameConversationUrl(state.chatUrl, page.url) && !(await provesSameThread(client, state))) {
+    throw new Error("已保存的标签页不再指向原会话；不会重发消息");
+  }
   if (state.chatUrl !== page.url) {
     state.chatUrl = page.url;
     await store.writeTask(state);
   }
+}
+
+/**
+ * 会话 URL 会漂移（`/` → `/c/local-chatgpt:…` → `/c/<会话>`），单靠 URL 无法判定会话身份。
+ * 因此 URL 不可比时，改用线程里是否出现本任务的信封（task_id）作为更强的证据。
+ */
+async function provesSameThread(client: EdgeClient, state: PlannerTaskState): Promise<boolean> {
+  if (!state.browserPageId) return false;
+  const evidence = await client.getTaskEvidence(state.browserPageId, state.taskId);
+  return evidence.occurrences >= 1;
 }
 
 export default function webGptPlannerExtension(pi: ExtensionAPI): void {
