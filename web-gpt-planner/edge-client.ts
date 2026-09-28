@@ -139,6 +139,7 @@ export const PAGE_STATE_SCRIPT = `(() => {${TRIGGER_PREAMBLE}
     href: location.href,
     pathname: location.pathname,
     search: location.search,
+    visible: document.visibilityState === "visible",
     composerFound: !!composerEl,
     composerLength: composerEl ? (composerEl.innerText || "").length : 0,
     triggerFound: !!trigger,
@@ -301,7 +302,7 @@ export class EdgeClient {
 
   private async createTab(url: string): Promise<EdgePage> {
     const browser = await this.browser();
-    const created = await browser.send("Target.createTarget", { url, background: true }) as { targetId?: string };
+    const created = await browser.send("Target.createTarget", { url, background: false }) as { targetId?: string };
     if (!created?.targetId) throw new EdgeClientError("Edge 未返回新建标签页的 targetId");
     return { targetId: created.targetId, url };
   }
@@ -337,6 +338,29 @@ export class EdgeClient {
     throw new EdgeClientError("ChatGPT 首页未在预期时间内就绪");
   }
 
+  /** 激活标签页；后台标签页下焦点、弹层与输入都不可靠（实测菜单关不掉、输入无效）。 */
+  async activatePage(targetId: string, signal?: AbortSignal): Promise<boolean> {
+    const browser = await this.browser();
+    try {
+      await browser.send("Target.activateTarget", { targetId });
+    } catch {
+      try {
+        await browser.send("Page.bringToFront", {}, await this.sessionFor(targetId));
+      } catch {
+        return false;
+      }
+    }
+    await this.sleep(300, signal);
+    return true;
+  }
+
+  /** 仅在标签页不可见时激活，避免无谓抢焦点。 */
+  async ensureVisible(targetId: string, signal?: AbortSignal): Promise<boolean> {
+    const state = await this.readState(targetId, signal);
+    if (state?.visible) return false;
+    return this.activatePage(targetId, signal);
+  }
+
   /** 页面状态（只读）。 */
   async readState(targetId: string, signal?: AbortSignal): Promise<PageState | undefined> {
     const value = await this.evaluate(targetId, PAGE_STATE_SCRIPT, signal);
@@ -356,6 +380,7 @@ export class EdgeClient {
 
   /** 只读预检：聊天模式 + 最新 + 极高；任一项不符即抛错（不自动点选）。 */
   async preflight(targetId: string, signal?: AbortSignal): Promise<EdgeSelection> {
+    await this.ensureVisible(targetId, signal);
     const state = await this.waitReady(targetId, signal);
     if (!state) throw new EdgeClientError("无法读取 ChatGPT 页面状态");
     if (!isNormalChatUrl(state.href)) throw new EdgeClientError("当前不是普通聊天页面（可能位于 GPT、项目或临时聊天）；请切换到普通聊天后重试");
@@ -369,7 +394,10 @@ export class EdgeClient {
     if (!EXPECTED_THINKING_LEVELS.includes(thinkingLevel)) {
       throw new EdgeClientError(`网页思考强度不是「极高」（当前：${thinkingLevel || `未识别，控件文本为「${reading || "空"}」`}）；请在网页里手动设置后重试`);
     }
-    const { model, items } = await this.readCheckedModel(targetId, signal);
+    const { model, items, menuClosed } = await this.readCheckedModel(targetId, signal);
+    if (!menuClosed) {
+      throw new EdgeClientError("模型菜单读取后未能关闭（页面可能不在前台）；请将该 ChatGPT 标签页切到前台后重试");
+    }
     if (!EXPECTED_MODELS.includes(model)) {
       const seen = items.length > 0 ? `；菜单项：${items.slice(0, 8).join(" / ")}` : "";
       throw new EdgeClientError(`网页模型不是「最新」（当前：${model || "未知"}${seen}）；请在网页里手动选择「最新」后重试`);
@@ -391,8 +419,8 @@ export class EdgeClient {
     return result?.result?.value;
   }
 
-  /** 打开模型菜单读出被勾选的模型与菜单项，然后按 Esc 关闭（不改变选择）。 */
-  async readCheckedModel(targetId: string, signal?: AbortSignal): Promise<{ model: string; items: string[] }> {
+  /** 打开模型菜单读出被勾选的模型与菜单项，然后关闭菜单（不改变选择）。 */
+  async readCheckedModel(targetId: string, signal?: AbortSignal): Promise<{ model: string; items: string[]; menuClosed: boolean }> {
     const opened = await this.evaluate(targetId, `(() => {${TRIGGER_PREAMBLE}
       const t = findTrigger();
       if (!t) return false;
@@ -405,26 +433,48 @@ export class EdgeClient {
       while (this.now() < deadline) {
         await this.sleep(400, signal);
         const menu = await this.evaluate(targetId, MENU_MODELS_SCRIPT, signal) as { open?: boolean; checked?: string[]; all?: string[] } | undefined;
-        if (menu?.open) return { model: menu.checked?.[0] ?? "", items: menu.all ?? [] };
+        if (menu?.open) {
+          return { model: menu.checked?.[0] ?? "", items: menu.all ?? [], menuClosed: await this.closeModelMenu(targetId) };
+        }
       }
       throw new EdgeClientError("模型菜单未打开，无法读回当前模型");
-    } finally {
+    } catch (error) {
       await this.closeModelMenu(targetId).catch(() => undefined);
+      throw error;
     }
   }
 
-  private async closeModelMenu(targetId: string): Promise<void> {
+  /** 关闭模型菜单：先再点一次触发器，再用真实 Escape 键；返回是否已确认关闭。 */
+  private async closeModelMenu(targetId: string): Promise<boolean> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const stillOpen = await this.evaluate(targetId, `(() => document.querySelectorAll('[role="menu"]').length > 0)()`);
-      if (stillOpen !== true) return;
-      await this.evaluate(targetId, `(() => {${TRIGGER_PREAMBLE}
-        const t = findTrigger();
-        if (t) { t.click(); return true; }
-        document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-        return true;
-      })()`);
-      await this.sleep(200);
+      if (!(await this.isMenuOpen(targetId))) return true;
+      if (attempt === 0) {
+        await this.evaluate(targetId, `(() => {${TRIGGER_PREAMBLE}
+          const t = findTrigger();
+          if (!t) return false;
+          t.click();
+          return true;
+        })()`).catch(() => undefined);
+      } else {
+        await this.pressKey(targetId, "Escape").catch(() => undefined);
+      }
+      await this.sleep(300);
     }
+    return !(await this.isMenuOpen(targetId));
+  }
+
+  private async isMenuOpen(targetId: string): Promise<boolean> {
+    return (await this.evaluate(targetId, `(() => document.querySelectorAll('[role="menu"]').length > 0)()`)) === true;
+  }
+
+  /** 发送真实按键事件；后台标签页收不到，所以调用前需保证页面在前台。 */
+  private async pressKey(targetId: string, key: string): Promise<void> {
+    const browser = await this.browser();
+    const sessionId = await this.sessionFor(targetId);
+    const code = key === "Escape" ? 27 : 0;
+    const base = { key, code: key, windowsVirtualKeyCode: code, nativeVirtualKeyCode: code };
+    await browser.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base }, sessionId);
+    await browser.send("Input.dispatchKeyEvent", { type: "keyUp", ...base }, sessionId);
   }
 
   async isGenerating(targetId: string, signal?: AbortSignal): Promise<boolean> {
@@ -448,6 +498,8 @@ export class EdgeClient {
     if (state.composerLength > 0) throw new EdgeClientError("ChatGPT 输入框里已有内容，不会覆盖；请清空后重试");
     if (!state.composerFound) throw new EdgeClientError("当前页面没有可用的输入框；已放弃发送");
 
+    // 后台标签页里输入不会生效（visibilityState=hidden、hasFocus=false），必须先激活。
+    await this.ensureVisible(targetId, signal);
     const browser = await this.browser();
     const sessionId = await this.sessionFor(targetId);
     await this.evaluate(targetId, `(() => { const c = document.querySelector("form div[role='textbox'][contenteditable='true'], div[role='textbox'][contenteditable='true']"); if (!c) return false; c.focus(); return true; })()`, signal);
@@ -521,6 +573,7 @@ export interface PageState {
   triggerLabel: string;
   triggerSelector: string;
   controls: string[];
+  visible: boolean;
   hasSend: boolean;
   hasStop: boolean;
 }

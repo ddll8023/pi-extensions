@@ -36,6 +36,7 @@ interface HarnessOptions {
   closeTargetError?: string;
   closeHttpFails?: boolean;
   listThrows?: boolean;
+  menuStaysOpen?: boolean;
   launcher?: boolean;
   onEvaluate?: (expression: string, state: Record<string, unknown>) => unknown;
 }
@@ -53,6 +54,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     href: CHAT_URL,
     pathname: "/",
     search: "",
+    visible: true,
     composerFound: true,
     composerLength: 0,
     triggerFound: true,
@@ -81,7 +83,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       if (custom !== undefined) return custom;
       if (expression.includes("composerFound")) return { result: { value: { ...state } } };
       if (expression.includes("menuitemradio")) return { result: { value: options.menu ?? { open: true, checked: ["最新"] } } };
-      if (expression.includes(`role="menu"]').length > 0`)) return { result: { value: false } };
+      if (expression.includes(`role="menu"]').length > 0`)) return { result: { value: options.menuStaysOpen === true } };
       return { result: { value: true } };
     }
     return {};
@@ -186,7 +188,7 @@ test("ensureChatPage 在没有可用标签页时新建", async () => {
   assert.equal(ensured.created, true);
   assert.equal(ensured.page.targetId, "created-1");
   const created = connection.calls.find((call) => call.method === "Target.createTarget");
-  assert.deepEqual(created?.params, { url: CHAT_URL, background: true });
+  assert.deepEqual(created?.params, { url: CHAT_URL, background: false });
 });
 
 test("ensureChatPage 复用不带会话 ID 的首页标签页", async () => {
@@ -337,6 +339,45 @@ test("fillAndSend 在发送按钮插入文本后才出现时仍能发送", async
   });
   const url = await client.fillAndSend("saved", "文本");
   assert.equal(url, "https://chatgpt.com/c/abc");
+});
+
+test("ensureVisible 只在标签页不可见时激活", async () => {
+  const hidden = makeHarness({ state: { visible: false } });
+  assert.equal(await hidden.client.ensureVisible("saved"), true);
+  assert.equal(hidden.connection.calls.some((call) => call.method === "Target.activateTarget"), true);
+
+  const visible = makeHarness();
+  assert.equal(await visible.client.ensureVisible("saved"), false);
+  assert.equal(visible.connection.calls.some((call) => call.method === "Target.activateTarget"), false);
+});
+
+test("preflight 与 fillAndSend 在读取/输入前先激活后台标签页", async () => {
+  const { client, connection } = makeHarness({
+    state: { visible: false, hasSend: false },
+    onEvaluate: (expression, state) => {
+      if (!expression.includes("button.click()")) return undefined;
+      state.href = "https://chatgpt.com/c/abc";
+      state.pathname = "/c/abc";
+      state.composerLength = 0;
+      state.hasStop = true;
+      return { result: { value: true } };
+    },
+  });
+  await client.preflight("saved");
+  const activateIndex = connection.calls.findIndex((call) => call.method === "Target.activateTarget");
+  const firstEvaluate = connection.calls.findIndex((call) => call.method === "Runtime.evaluate");
+  assert.ok(activateIndex >= 0 && activateIndex < firstEvaluate, "预检应在读取状态前激活标签页");
+
+  connection.calls.length = 0;
+  await client.fillAndSend("saved", "文本");
+  const insertIndex = connection.calls.findIndex((call) => call.method === "Input.insertText");
+  const activateBeforeInsert = connection.calls.findIndex((call) => call.method === "Target.activateTarget");
+  assert.ok(activateBeforeInsert >= 0 && activateBeforeInsert < insertIndex, "发送应在写入文本前激活标签页");
+});
+
+test("模型菜单关不掉时预检直接失败", async () => {
+  const { client } = makeHarness({ menuStaysOpen: true });
+  await assert.rejects(() => client.preflight("saved"), /模型菜单读取后未能关闭/);
 });
 
 test("closePage 在 CDP 关闭失败时回退到 HTTP 接口", async () => {
