@@ -285,6 +285,31 @@ export default function webGptPlannerExtension(pi: ExtensionAPI): void {
         }
         return;
       }
+      // 已发过计划的暂停（如预检/提交异常）：重新预检后把任务交回本地会话续发下一轮，不重发上一轮。
+      if (state.status === "paused" && !state.pending && state.browserPageId && state.roundsUsed > 0) {
+        try {
+          await rebindActivePage(edgeFor(), store, state);
+          const selection = await edgeFor().preflight(state.browserPageId);
+          state.selectedModel = selection.model;
+          state.thinkingLevel = selection.thinkingLevel;
+          state.composerMode = selection.mode;
+          state.status = "plan_ready";
+          state.pauseReason = undefined;
+          await store.writeTask(state);
+          activeContext = ctx;
+          pi.sendUserMessage(`/skill:web-gpt-planner\n\nResume task ${state.taskId}. The saved phase plan is still active; submit the next exchange when ready. Current status: plan_ready, phase ${state.phaseId}, plan v${state.planVersion}.`, {
+            deliverAs: "followUp",
+            expandPromptTemplates: true,
+          });
+          ctx.ui.notify(`已通过网页预检，任务 ${state.taskId} 交回本地会话继续（不会重发上一轮）。`, "info");
+        } catch (error) {
+          state.status = "paused";
+          state.pauseReason = `恢复预检失败：${errorText(error)}`;
+          await store.writeTask(state);
+          ctx.ui.notify(state.pauseReason, "warning");
+        }
+        return;
+      }
       if (state.pending?.submissionState === "unknown") {
         try {
           await rebindActivePage(edgeFor(), store, state);

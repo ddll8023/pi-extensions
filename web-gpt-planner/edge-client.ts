@@ -18,6 +18,18 @@ const EXPECTED_MODELS = ["最新", "Latest"];
 const EXPECTED_THINKING_LEVELS = ["极高", "Extended", "Extreme", "extreme-high"];
 const READY_TIMEOUT_MS = 20_000;
 const LAUNCH_WAIT_MS = 40_000;
+/** 冷启动后这些命令可能要等几十秒（建标签页、导航）。 */
+const SLOW_COMMAND_TIMEOUT_MS = 60_000;
+const SLOW_COMMANDS = new Set(["Target.createTarget", "Page.navigate"]);
+const CDP_READY_TIMEOUT_MS = 60_000;
+
+function commandTimeoutMs(method: string): number {
+  return SLOW_COMMANDS.has(method) ? SLOW_COMMAND_TIMEOUT_MS : READY_TIMEOUT_MS;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 export class EdgeClientError extends Error {
   constructor(message: string) {
@@ -101,7 +113,7 @@ async function connectDefault(webSocketDebuggerUrl: string): Promise<CdpConnecti
         socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
         setTimeout(() => {
           if (pending.delete(id)) reject(new EdgeClientError(`CDP 命令超时：${method}`));
-        }, READY_TIMEOUT_MS);
+        }, commandTimeoutMs(method));
       });
     },
     close() {
@@ -143,6 +155,7 @@ export const PAGE_STATE_SCRIPT = `(() => {${TRIGGER_PREAMBLE}
     pathname: location.pathname,
     search: location.search,
     visible: document.visibilityState === "visible",
+    focused: document.hasFocus(),
     composerFound: !!composerEl,
     composerLength: composerEl ? (composerEl.innerText || "").trim().length : 0,
     composerEmpty: composerEl ? !(composerEl.innerText || "").trim() : false,
@@ -304,8 +317,29 @@ export class EdgeClient {
   private async browser(): Promise<CdpConnection> {
     if (this.connection) return this.connection;
     const version = await this.ensureEndpoint();
-    this.connection = await this.connect(version.webSocketDebuggerUrl);
-    return this.connection;
+    const connection = await this.connect(version.webSocketDebuggerUrl);
+    this.connection = connection;
+    await this.waitForCommands(connection);
+    return connection;
+  }
+
+  /**
+   * 冷启动时 /json/version 会先就绪，但命令仍可能长时间不返回（实测 Target.createTarget 会挂住）。
+   * 先用一个便宜的命令确认真能应答，再交给上层。
+   */
+  private async waitForCommands(connection: CdpConnection, signal?: AbortSignal): Promise<void> {
+    const deadline = this.now() + CDP_READY_TIMEOUT_MS;
+    for (;;) {
+      try {
+        await connection.send("Target.getTargets");
+        return;
+      } catch (error) {
+        if (this.now() >= deadline) {
+          throw new EdgeClientError(`Edge 调试端点已响应，但命令在 ${CDP_READY_TIMEOUT_MS / 1000} 秒内不可用（${errorText(error)}）；请稍后重试`);
+        }
+        await this.sleep(1_000, signal);
+      }
+    }
   }
 
   private async sessionFor(targetId: string): Promise<string> {
@@ -341,9 +375,18 @@ export class EdgeClient {
 
   private async createTab(url: string): Promise<EdgePage> {
     const browser = await this.browser();
-    const created = await browser.send("Target.createTarget", { url, background: false }) as { targetId?: string };
-    if (!created?.targetId) throw new EdgeClientError("Edge 未返回新建标签页的 targetId");
-    return { targetId: created.targetId, url };
+    let failure = "";
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const created = await browser.send("Target.createTarget", { url, background: false }) as { targetId?: string };
+        if (!created?.targetId) throw new EdgeClientError("Edge 未返回新建标签页的 targetId");
+        return { targetId: created.targetId, url };
+      } catch (error) {
+        failure = errorText(error);
+        if (attempt < 3) await this.sleep(2_000);
+      }
+    }
+    throw new EdgeClientError(`新建标签页失败（已重试 3 次）：${failure}`);
   }
 
   async findTabById(targetId: string, signal?: AbortSignal): Promise<EdgePage | undefined> {
@@ -393,10 +436,10 @@ export class EdgeClient {
     return true;
   }
 
-  /** 仅在标签页不可见时激活，避免无谓抢焦点。 */
+  /** 不可见或没有焦点时激活：无焦点页面下弹层开关与键盘事件都不可靠（实测菜单关不掉）。 */
   async ensureVisible(targetId: string, signal?: AbortSignal): Promise<boolean> {
     const state = await this.readState(targetId, signal);
-    if (state?.visible) return false;
+    if (state?.visible && state.focused) return false;
     return this.activatePage(targetId, signal);
   }
 
@@ -460,27 +503,47 @@ export class EdgeClient {
 
   /** 打开模型菜单读出被勾选的模型与菜单项，然后关闭菜单（不改变选择）。 */
   async readCheckedModel(targetId: string, signal?: AbortSignal): Promise<{ model: string; items: string[]; menuClosed: boolean }> {
-    const opened = await this.evaluate(targetId, `(() => {${TRIGGER_PREAMBLE}
-      const t = findTrigger();
-      if (!t) return false;
-      t.click();
-      return true;
-    })()`, signal);
-    if (opened !== true) throw new EdgeClientError("未找到模型选择控件，无法读回当前模型");
+    // 点击前先归位：若已有菜单开着，先按 Escape，避免这次点击变成「关闭」。
+    if (await this.isMenuOpen(targetId)) {
+      await this.pressKey(targetId, "Escape").catch(() => undefined);
+      await this.sleep(400, signal);
+    }
+    let clicks = 0;
     try {
       const deadline = this.now() + 8_000;
+      let nextClickAt = 0;
       while (this.now() < deadline) {
+        // 无焦点的页面上单击可能被丢或只能切换菜单，因此 2.5 秒未开就再点一次。
+        if (clicks < 2 && this.now() >= nextClickAt) {
+          if ((await this.clickTrigger(targetId, signal)) !== true) {
+            throw new EdgeClientError("未找到模型选择控件，无法读回当前模型");
+          }
+          clicks += 1;
+          nextClickAt = this.now() + 2_500;
+        }
         await this.sleep(400, signal);
         const menu = await this.evaluate(targetId, MENU_MODELS_SCRIPT, signal) as { open?: boolean; checked?: string[]; all?: string[] } | undefined;
         if (menu?.open) {
           return { model: menu.checked?.[0] ?? "", items: menu.all ?? [], menuClosed: await this.closeModelMenu(targetId) };
         }
       }
-      throw new EdgeClientError("模型菜单未打开，无法读回当前模型");
+      const state = await this.readState(targetId, signal);
+      throw new EdgeClientError(
+        `模型菜单未打开，无法读回当前模型（点击 ${clicks} 次后仍未打开；visible=${state?.visible}，focused=${state?.focused}）`,
+      );
     } catch (error) {
       await this.closeModelMenu(targetId).catch(() => undefined);
       throw error;
     }
+  }
+
+  private async clickTrigger(targetId: string, signal?: AbortSignal): Promise<boolean> {
+    return (await this.evaluate(targetId, `(() => {${TRIGGER_PREAMBLE}
+      const t = findTrigger();
+      if (!t) return false;
+      t.click();
+      return true;
+    })()`, signal)) === true;
   }
 
   /** 关闭模型菜单：先再点一次触发器，再用真实 Escape 键；返回是否已确认关闭。 */
@@ -622,6 +685,7 @@ export interface PageState {
   triggerSelector: string;
   controls: string[];
   visible: boolean;
+  focused: boolean;
   hasSend: boolean;
   hasStop: boolean;
 }

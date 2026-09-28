@@ -37,6 +37,9 @@ interface HarnessOptions {
   closeHttpFails?: boolean;
   listThrows?: boolean;
   menuStaysOpen?: boolean;
+  menuOpensAfterClicks?: number;
+  createTargetFailures?: number;
+  getTargetsFailures?: number;
   launcher?: boolean;
   onEvaluate?: (expression: string, state: Record<string, unknown>) => unknown;
 }
@@ -58,6 +61,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
     composerFound: true,
     composerLength: 0,
     composerEmpty: true,
+    focused: true,
     triggerFound: true,
     triggerText: "思考强度 极高",
     hasSend: true,
@@ -66,10 +70,22 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   };
   const launched: string[][] = [];
   let versionOk = options.versionOk ?? true;
+  let menuClicks = 0;
+  const menuOpensAfter = options.menuOpensAfterClicks ?? 1;
+  const menuVisible = () => menuClicks >= menuOpensAfter;
+  let createTargetFailures = options.createTargetFailures ?? 0;
+  let getTargetsFailures = options.getTargetsFailures ?? 0;
 
   const connection = new FakeConnection((method, params) => {
     if (method === "Target.attachToTarget") return { sessionId: "session-1" };
-    if (method === "Target.createTarget") return { targetId: "created-1" };
+    if (method === "Target.getTargets") {
+      if (getTargetsFailures > 0) { getTargetsFailures -= 1; throw new Error("CDP 命令超时：Target.getTargets"); }
+      return { targetInfos: [] };
+    }
+    if (method === "Target.createTarget") {
+      if (createTargetFailures > 0) { createTargetFailures -= 1; throw new Error("CDP 命令超时：Target.createTarget"); }
+      return { targetId: "created-1" };
+    }
     if (method === "Target.closeTarget") {
       if (options.closeTargetFails) throw new Error(options.closeTargetError ?? "not attached to target");
       return {};
@@ -83,8 +99,13 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       const custom = options.onEvaluate?.(expression, state);
       if (custom !== undefined) return custom;
       if (expression.includes("composerFound")) return { result: { value: { ...state } } };
-      if (expression.includes("menuitemradio")) return { result: { value: options.menu ?? { open: true, checked: ["最新"] } } };
-      if (expression.includes(`role="menu"]').length > 0`)) return { result: { value: options.menuStaysOpen === true } };
+      if (expression.includes("t.click()")) { menuClicks += 1; return { result: { value: true } }; }
+      if (expression.includes("menuitemradio")) {
+        return { result: { value: menuVisible() ? (options.menu ?? { open: true, checked: ["最新"] }) : { open: false, checked: [], all: [] } } };
+      }
+      if (expression.includes(`role="menu"]').length > 0`)) {
+        return { result: { value: menuVisible() && options.menuStaysOpen === true } };
+      }
       return { result: { value: true } };
     }
     return {};
@@ -373,14 +394,24 @@ test("fillAndSend 在发送按钮插入文本后才出现时仍能发送", async
   assert.equal(url, "https://chatgpt.com/c/abc");
 });
 
-test("ensureVisible 只在标签页不可见时激活", async () => {
+test("ensureVisible 在不可见或没有焦点时激活", async () => {
   const hidden = makeHarness({ state: { visible: false } });
   assert.equal(await hidden.client.ensureVisible("saved"), true);
   assert.equal(hidden.connection.calls.some((call) => call.method === "Target.activateTarget"), true);
 
+  const unfocused = makeHarness({ state: { visible: true, focused: false } });
+  assert.equal(await unfocused.client.ensureVisible("saved"), true);
+  assert.equal(unfocused.connection.calls.some((call) => call.method === "Target.activateTarget"), true);
+
   const visible = makeHarness();
   assert.equal(await visible.client.ensureVisible("saved"), false);
   assert.equal(visible.connection.calls.some((call) => call.method === "Target.activateTarget"), false);
+});
+
+test("菜单第一次点击没打开时会再点一次", async () => {
+  const { client, connection } = makeHarness({ menuOpensAfterClicks: 2 });
+  assert.deepEqual(await client.preflight("saved"), { model: "最新", thinkingLevel: "极高", mode: "chat" });
+  assert.equal(connection.calls.filter((call) => String(call.params.expression ?? "").includes("t.click()")).length, 2);
 });
 
 test("preflight 与 fillAndSend 在读取/输入前先激活后台标签页", async () => {
@@ -410,6 +441,20 @@ test("preflight 与 fillAndSend 在读取/输入前先激活后台标签页", as
 test("模型菜单关不掉时预检直接失败", async () => {
   const { client } = makeHarness({ menuStaysOpen: true });
   await assert.rejects(() => client.preflight("saved"), /模型菜单读取后未能关闭/);
+});
+
+test("createTab 在命令超时后重试成功", async () => {
+  const { client, connection } = makeHarness({ pages: [], createTargetFailures: 2 });
+  const ensured = await client.ensureChatPage();
+  assert.equal(ensured.created, true);
+  assert.equal(ensured.page.targetId, "created-1");
+  assert.equal(connection.calls.filter((call) => call.method === "Target.createTarget").length, 3);
+});
+
+test("浏览器未就绪时先等命令可应答再建页", async () => {
+  const { client, connection } = makeHarness({ pages: [], getTargetsFailures: 2 });
+  await client.ensureChatPage();
+  assert.equal(connection.calls.filter((call) => call.method === "Target.getTargets").length, 3);
 });
 
 test("closePage 在 CDP 关闭失败时回退到 HTTP 接口", async () => {
