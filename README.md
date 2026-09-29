@@ -9,7 +9,7 @@
 - `permission-mode/`：权限模式切换扩展，命令为 `/permission-mode`。
 - `token-rate/`：在模型生成期间显示当前 AI 回复的 Token 生成速率。
 - `status-footer/`：自定义底部 Footer，隐藏 MCP 状态，并将插件状态分成最多两行显示。
-- `pigui/`：命令行工具（不是 pi 扩展，不会被 `pi.extensions` 加载）。在任意工作目录执行 `pigui`，起本地服务并让 Orca 在本 worktree 打开网页对话界面。
+- `pigui/`：命令行工具（不是 pi 扩展，不会被 `pi.extensions` 加载）。在任意工作目录执行 `pigui`，起本地服务并让 Orca 在本 worktree 打开网页对话界面；页面里可用 `/model` 切换模型与思考等级。
 
 权限模式支持：
 
