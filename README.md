@@ -9,10 +9,7 @@
 - `permission-mode/`：权限模式切换扩展，命令为 `/permission-mode`。
 - `token-rate/`：在模型生成期间显示当前 AI 回复的 Token 生成速率。
 - `status-footer/`：自定义底部 Footer，隐藏 MCP 状态，并将插件状态分成最多两行显示。
-- `web-gpt-planner/`：文本优先的 ChatGPT 网页规划协作；命令 `/sol-plan`、`/sol-status`、`/sol-resume`、`/sol-stop`，V1 不自动上传附件。
-  - 无需预先打开标签页：`/sol-plan` 会在专用 Edge 实例里复用或新建 ChatGPT 标签页，`/sol-stop` 关闭自建的那个（复用的不关）。
-  - 不依赖 `edge://inspect` 人工授权：直连固定 CDP 端口 `http://127.0.0.1:9222`，可用 `WEB_GPT_PLANNER_EDGE_PORT` 覆盖，`WEB_GPT_PLANNER_EDGE_LAUNCHER` 指定启动脚本（默认 `%LOCALAPPDATA%\PiAgent\PiAgent-Edge.bat`，端点未运行时会拉起它）；登录态保存在专用 Profile `%LOCALAPPDATA%\Microsoft\Edge\PiAgentProfile`，不碰你日常 Edge 的 Profile。
-  - 网页侧仍要求“聊天模式 + 最新 + 思考极高”；读回不符或无法确认时暂停，需手动设置后 `/sol-resume`。
+- `pigui/`：命令行工具（不是 pi 扩展，不会被 `pi.extensions` 加载）。在任意工作目录执行 `pigui`，起本地服务并让 Orca 在本 worktree 打开网页对话界面。
 
 权限模式支持：
 
@@ -21,7 +18,21 @@
 
 详见 [`permission-mode/README.md`](permission-mode/README.md) 和 [`status-footer/README.md`](status-footer/README.md)。
 
-`package.json` 中的 `pi.extensions` 使用 `./*/index.ts`，每个带 `index.ts` 的插件子目录会随 package 加载；`pi.skills` 指向 `./skills`，其中的 Skill 会随 package 发现。新扩展源码需重新加载或更新对应 package 后才会在 Pi 中生效，未经验证不得据此声称命令已可用。
+`package.json` 中的 `pi.extensions` 使用 `./*/index.ts`，每个带 `index.ts` 的插件子目录会随 package 加载。新扩展源码需重新加载或更新对应 package 后才会在 Pi 中生效，未经验证不得据此声称命令已可用。
+
+## pigui（网页对话界面）
+
+`pigui/` 是本仓库里的一个独立命令行工具，**不是 pi 扩展**：目录内没有 `index.ts`，所以打包根 `package.json` 的 `pi.extensions`（`./*/index.ts`）不会加载它。
+
+它借用本机已安装的 pi 的 SDK（不写进依赖、不额外下载），以当前工作目录为 `cwd` 起一个本地 HTTP + SSE 服务，再让 Orca 在本 worktree 打开页签；页面与 pi 共用 `~/.pi/agent/sessions` 会话目录。
+
+安装（跨机器）：
+
+```bash
+npm i -g github:ddll8023/pi-extensions
+```
+
+用法、参数与接口协议见 [`pigui/README.md`](pigui/README.md)。
 
 ## GitHub 安装
 
