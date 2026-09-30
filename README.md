@@ -9,7 +9,7 @@
 - `permission-mode/`：权限模式切换扩展，命令为 `/permission-mode`。
 - `token-rate/`：在模型生成期间显示当前 AI 回复的 Token 生成速率。
 - `status-footer/`：自定义底部 Footer，隐藏 MCP 状态，并将插件状态分成最多两行显示。
-- `pigui/`：命令行工具（不是 pi 扩展，不会被 `pi.extensions` 加载）。在任意工作目录执行 `pigui`，起本地服务并让 Orca 在本 worktree 打开网页对话界面；页面里可用 `/model` 切换模型与思考等级，用 `@` 引用工作目录里的文件，也可拖拽／粘贴上传图片与文本附件。
+- `pigui/`：**已迁出本仓库**，现为独立仓库与独立 npm 包：<https://github.com/ddll8023/pigui>（`npm i -g github:ddll8023/pigui`）。它是命令行工具，不是 pi 扩展，不会被 `pi.extensions` 加载。
 
 权限模式支持：
 
@@ -22,19 +22,9 @@
 
 ## pigui（网页对话界面）
 
-`pigui/` 是本仓库里的一个独立命令行工具，**不是 pi 扩展**：目录内没有 `index.ts`，所以打包根 `package.json` 的 `pi.extensions`（`./*/index.ts`）不会加载它。
+`pigui` 已拆成独立仓库与独立 npm 包：<https://github.com/ddll8023/pigui>（安装：`npm i -g github:ddll8023/pigui`）。本仓库不再包含它，`package.json` 里也不再声明 `bin`。
 
-它借用本机已安装的 pi 的 SDK（不写进依赖、不额外下载），以当前工作目录为 `cwd` 起一个本地 HTTP + SSE 服务，再让 Orca 在本 worktree 打开页签；页面与 pi 共用 `~/.pi/agent/sessions` 会话目录。
-
-安装（跨机器）：
-
-```bash
-npm i -g github:ddll8023/pi-extensions
-```
-
-这个 npm 包只带 `pigui/`（打包根 `package.json` 的 `files` 只列了它）：装完只有一个 `pigui` 命令，本仓库里那 5 个 pi 扩展不在里面，它们由下面的 `pi install git:...` 安装，两条路互不影响。
-
-用法、参数与接口协议见 [`pigui/README.md`](pigui/README.md)。
+它借用本机已安装的 pi 的 SDK（不写进依赖、不额外下载），以当前工作目录为 `cwd` 起一个本地 HTTP + SSE 服务，再让 Orca 在本 worktree 打开页签；页面与 pi 共用 `~/.pi/agent/sessions` 会话目录。用法、参数与接口协议见新仓库的 `README.md`。
 
 ## GitHub 安装
 

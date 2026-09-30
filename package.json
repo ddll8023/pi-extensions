@@ -3,10 +3,6 @@
   "version": "0.1.0",
   "description": "Personal Pi Agent extensions",
   "keywords": ["pi-package"],
-  "bin": {
-    "pigui": "./pigui/pigui.mjs"
-  },
-  "files": ["pigui"],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
