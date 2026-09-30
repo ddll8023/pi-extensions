@@ -32,6 +32,8 @@
 npm i -g github:ddll8023/pi-extensions
 ```
 
+这个 npm 包只带 `pigui/`（打包根 `package.json` 的 `files` 只列了它）：装完只有一个 `pigui` 命令，本仓库里那 5 个 pi 扩展不在里面，它们由下面的 `pi install git:...` 安装，两条路互不影响。
+
 用法、参数与接口协议见 [`pigui/README.md`](pigui/README.md)。
 
 ## GitHub 安装
