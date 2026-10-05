@@ -24,6 +24,8 @@
 
 `pigui` 已拆成独立仓库与独立 npm 包：<https://github.com/ddll8023/pigui>（安装：`npm i -g github:ddll8023/pigui`）。本仓库不再包含它，`package.json` 里也不再声明 `bin`。
 
+**它不是 pi 扩展**，`pi install` 装不了它；同样不要执行 `npm i -g pigui`——npm 上的同名包是 2019 年的无关 UI 组件库，必须用带 `github:ddll8023/` 的地址。新电脑从零复现整套环境见 [`pi-plugins-install-checklist.md`](pi-plugins-install-checklist.md)。
+
 它借用本机已安装的 pi 的 SDK（不写进依赖、不额外下载），以当前工作目录为 `cwd` 起一个本地 HTTP + SSE 服务，再让 Orca 在本 worktree 打开页签；页面与 pi 共用 `~/.pi/agent/sessions` 会话目录。用法、参数与接口协议见新仓库的 `README.md`。
 
 ## GitHub 安装
@@ -35,6 +37,8 @@ GitHub 仓库：<https://github.com/ddll8023/pi-extensions>
 ```bash
 pi install git:github.com/ddll8023/pi-extensions
 ```
+
+pi 扩展与独立工具 pigui 是两条互不替代的安装路线，完整步骤、验证命令与常见报错排查见 [`pi-plugins-install-checklist.md`](pi-plugins-install-checklist.md)。
 
 Pi 会将 package 缓存到 `~/.pi/agent/git/`，不会依赖本地 `test` 文件夹。更新 GitHub 上的所有插件：
 
