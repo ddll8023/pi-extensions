@@ -90,6 +90,7 @@ pigui --no-open    # 只起服务并打印地址，最省事、不影响其他�
 - `permission-mode`：命令 `/permission-mode`，权限模式切换
 - `token-rate`：显示 Token 生成速率
 - `status-footer`：自定义底部状态栏
+- `supervisor`：命令 `/supervisor on|off|status`，默认关闭的任务级旁路监督；只给建议，不产生授权。用法见 [`supervisor/README.md`](supervisor/README.md)。
 
 ## 常见问题排查
 
