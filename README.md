@@ -9,7 +9,6 @@
 - `permission-mode/`：权限模式切换扩展，命令为 `/permission-mode`。
 - `token-rate/`：在模型生成期间显示当前 AI 回复的 Token 生成速率。
 - `status-footer/`：自定义底部 Footer，隐藏 MCP 状态，并将插件状态分成最多两行显示。
-- `supervisor/`：默认关闭的任务级旁路监督，命令为 `/supervisor on|off|status`；只给建议，不执行工具或产生授权。详见 [`supervisor/README.md`](supervisor/README.md)。
 - `pigui/`：**已迁出本仓库**，现为独立仓库与独立 npm 包：<https://github.com/ddll8023/pigui>（`npm i -g github:ddll8023/pigui`）。它是命令行工具，不是 pi 扩展，不会被 `pi.extensions` 加载。
 
 权限模式支持：
