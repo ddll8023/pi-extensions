@@ -10,8 +10,6 @@ import { Key } from "@earendil-works/pi-tui";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-	autoContextToolNames,
-	commandExecutionToolNames,
 	judgeShellCommand,
 	readOnlyToolNames,
 	type ReadOnlyPolicy,
@@ -121,8 +119,6 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 	const sessionGrants = new Set<string>();
 	const sentinel = new WorkspaceSentinel();
 	const readOnlyTools = (): Set<string> => readOnlyToolNames(policy);
-	const autoContextTools = autoContextToolNames();
-	const commandExecutionTools = commandExecutionToolNames();
 	const grantKey = (kind: "tool" | "command", name: string): string => `${kind}:${name}`;
 
 	function updateStatus(ctx: ExtensionContext): void {
@@ -282,13 +278,6 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 			return undefined;
 		}
 
-		if (autoContextTools.has(event.toolName)) {
-			// context-mode 的命令/分析调用不因工具名本身重复询问；
-			// 真正执行代码的工具若改动 git 工作区，由变更哨兵回滚并报错。
-			if (commandExecutionTools.has(event.toolName)) await sentinel.begin(event.toolCallId, ctx.cwd);
-			return undefined;
-		}
-
 		if (readOnlyTools().has(event.toolName)) return undefined;
 		if (sessionGrants.has(grantKey("tool", event.toolName))) return undefined;
 
@@ -311,7 +300,7 @@ export default function permissionModeExtension(pi: ExtensionAPI): void {
 
 	pi.on("tool_result", async (event) => {
 		if (mode !== "no-edit") return undefined;
-		if (!isBashToolResult(event) && !isPowerShellToolResult(event) && !commandExecutionTools.has(event.toolName)) {
+		if (!isBashToolResult(event) && !isPowerShellToolResult(event)) {
 			return undefined;
 		}
 
